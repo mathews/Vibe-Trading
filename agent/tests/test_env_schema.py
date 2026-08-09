@@ -73,6 +73,7 @@ class TestEnvConfigDefaults:
         assert c.llm.langchain_model_name == ""
         assert c.llm.langchain_temperature == 0.0
         assert c.llm.timeout_seconds == 120
+        assert c.llm.vibe_trading_disable_http_proxy is False
         assert c.llm.max_retries == 2
         assert c.llm.langchain_reasoning_effort == ""
         assert c.llm.vibe_trading_deepseek_adapter == "auto"

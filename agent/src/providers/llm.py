@@ -36,6 +36,37 @@ try:
 except ImportError:
     OpenAIOmit = None  # type: ignore
 
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore
+
+
+def _build_proxy_free_http_clients() -> tuple[Any, Any]:
+    """Build sync and async HTTPX clients that ignore proxy environment vars.
+
+    Supplying an explicit transport prevents ``httpx.Client`` from installing
+    proxy mounts discovered from HTTP(S)_PROXY.  ``trust_env`` remains enabled
+    on the transports so SSL_CERT_FILE and SSL_CERT_DIR still work for private
+    certificate authorities.
+
+    Returns:
+        A ``(sync_client, async_client)`` pair for the OpenAI SDK.
+
+    Raises:
+        RuntimeError: If HTTPX is unavailable while proxy disabling is enabled.
+    """
+    if httpx is None:
+        raise RuntimeError(
+            "VIBE_TRADING_DISABLE_HTTP_PROXY requires the httpx package"
+        )
+    sync_transport = httpx.HTTPTransport(proxy=None, trust_env=True)
+    async_transport = httpx.AsyncHTTPTransport(proxy=None, trust_env=True)
+    return (
+        httpx.Client(transport=sync_transport),
+        httpx.AsyncClient(transport=async_transport),
+    )
+
 
 _AMBIENT_OPENAI_HEADER_ENV_VARS = (
     "OPENAI_CUSTOM_HEADERS",
@@ -1096,4 +1127,8 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
                 headers["User-Agent"] = custom_ua
         _validate_explicit_headers(headers, source=f"{caps.name} provider configuration")
         kwargs["default_headers"] = headers
+    if get_env_config().llm.vibe_trading_disable_http_proxy:
+        sync_client, async_client = _build_proxy_free_http_clients()
+        kwargs["http_client"] = sync_client
+        kwargs["http_async_client"] = async_client
     return ChatOpenAIWithReasoning(**kwargs)

@@ -35,7 +35,17 @@ _PAPER_CAPPED = frozenset({"longbridge", "dhan", "shoonya", "trading212"})
 # through the mandate gate — which `test_backtest_runner_security.py` and the
 # order-guard suites cover; this gate deliberately does not re-assert it.
 _LIVE_CAPABLE = frozenset(
-    {"alpaca", "binance", "futu", "okx", "tiger", "robinhood", "ibkr", "mt5"}
+    {
+        "alpaca",
+        "binance",
+        "etoro",
+        "futu",
+        "okx",
+        "tiger",
+        "robinhood",
+        "ibkr",
+        "mt5",
+    }
 )
 
 _ORDER_ENTRY_POINTS = ("place_order", "cancel_order")
@@ -51,11 +61,7 @@ _MAX_STATEMENTS_BEFORE_GUARD = 1
 
 def _connector_names() -> list[str]:
     """Return every connector package name found on disk."""
-    return sorted(
-        path.name
-        for path in _CONNECTOR_ROOT.iterdir()
-        if path.is_dir() and not path.name.startswith("__")
-    )
+    return sorted(path.name for path in _CONNECTOR_ROOT.iterdir() if path.is_dir() and not path.name.startswith("__"))
 
 
 def _order_functions(sdk_path: Path) -> dict[str, tuple[ast.FunctionDef, str]]:
@@ -71,11 +77,7 @@ def _order_functions(sdk_path: Path) -> dict[str, tuple[ast.FunctionDef, str]]:
 
 def _executable_body(func: ast.FunctionDef) -> list[ast.stmt]:
     """Return the function body with the docstring removed."""
-    return [
-        stmt
-        for stmt in func.body
-        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
-    ]
+    return [stmt for stmt in func.body if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))]
 
 
 def test_every_connector_is_classified() -> None:

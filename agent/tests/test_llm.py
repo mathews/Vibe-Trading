@@ -511,6 +511,83 @@ class TestMinimaxTemperature:
         assert captured["temperature"] == 0.7
 
 
+class TestDisableHttpProxy:
+    """The proxy opt-out must cover both OpenAI SDK execution paths."""
+
+    def test_build_llm_passes_sync_and_async_direct_clients(self) -> None:
+        import src.providers.llm as llm_mod
+
+        llm_mod._dotenv_loaded = True
+        captured: dict[str, object] = {}
+        sync_client = object()
+        async_client = object()
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        env = {
+            "LANGCHAIN_PROVIDER": "openai",
+            "OPENAI_API_KEY": "sk-test",
+            "LANGCHAIN_MODEL_NAME": "gpt-4o-mini",
+            "VIBE_TRADING_DISABLE_HTTP_PROXY": "1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(
+                llm_mod,
+                "_build_proxy_free_http_clients",
+                return_value=(sync_client, async_client),
+            ) as build_clients:
+                with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+                    build_llm()
+
+        build_clients.assert_called_once_with()
+        assert captured["http_client"] is sync_client
+        assert captured["http_async_client"] is async_client
+        assert "http_socket_options" not in captured
+
+    def test_build_llm_leaves_default_transport_when_disabled(self) -> None:
+        import src.providers.llm as llm_mod
+
+        llm_mod._dotenv_loaded = True
+        captured: dict[str, object] = {}
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        env = {
+            "LANGCHAIN_PROVIDER": "openai",
+            "OPENAI_API_KEY": "sk-test",
+            "LANGCHAIN_MODEL_NAME": "gpt-4o-mini",
+            "VIBE_TRADING_DISABLE_HTTP_PROXY": "0",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+                build_llm()
+
+        assert "http_client" not in captured
+        assert "http_async_client" not in captured
+
+    def test_direct_clients_do_not_install_environment_proxy_mounts(self) -> None:
+        import asyncio
+        import src.providers.llm as llm_mod
+
+        env = {
+            "HTTP_PROXY": "http://proxy.invalid:8080",
+            "HTTPS_PROXY": "http://proxy.invalid:8080",
+            "ALL_PROXY": "socks5://proxy.invalid:1080",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            sync_client, async_client = llm_mod._build_proxy_free_http_clients()
+        try:
+            assert sync_client._mounts == {}
+            assert async_client._mounts == {}
+        finally:
+            sync_client.close()
+            asyncio.run(async_client.aclose())
+
+
 # ---------------------------------------------------------------------------
 # Kimi K-series temperature forcing
 # ---------------------------------------------------------------------------

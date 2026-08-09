@@ -1205,6 +1205,8 @@ def trading_history(
     bar_size: str = "1 day",
     what_to_show: str = "TRADES",
     use_rth: bool = True,
+    period: str = "1d",
+    limit: int = 90,
 ) -> str:
     """Read historical bars from the selected trading connector profile.
 
@@ -1222,6 +1224,8 @@ def trading_history(
         bar_size: IBKR bar size, default 1 day.
         what_to_show: Data type, default TRADES.
         use_rth: Use regular trading hours.
+        period: Bar interval for SDK connectors (broker_sdk): 1m/5m/1h/1d/1w.
+        limit: Number of bars for SDK connectors.
     """
     params = _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account)
     params.update(
@@ -1234,6 +1238,8 @@ def trading_history(
             "bar_size": bar_size,
             "what_to_show": what_to_show,
             "use_rth": use_rth,
+            "period": period,
+            "limit": limit,
         }
     )
     registry = _get_registry()
@@ -2468,6 +2474,10 @@ def run_shadow_backtest(
 ) -> str:
     """Run a multi-market backtest (A股/港股/美股/crypto) on a Shadow Account
     profile and compute delta-PnL attribution vs the user's realized trades.
+
+    Markets are backtested per settlement currency (CNY / HKD / USD pools;
+    us + crypto share the USD pool); the headline PnL uses the profile's
+    source-market currency.
 
     Requires `extract_shadow_strategy` to have run first.
 

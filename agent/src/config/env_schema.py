@@ -140,6 +140,9 @@ class LLMConfig(_EnvBase):
         default="https://chatgpt.com/backend-api/codex/responses",
     )
     openai_model: str = Field(alias="OPENAI_MODEL", default="")
+    vibe_trading_disable_http_proxy: EnvBool = Field(
+        alias="VIBE_TRADING_DISABLE_HTTP_PROXY", default=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +193,8 @@ class DataConfig(_EnvBase):
     longbridge_app_key: str = Field(alias="LONGBRIDGE_APP_KEY", default="")
     longbridge_app_secret: str = Field(alias="LONGBRIDGE_APP_SECRET", default="")
     longbridge_access_token: str = Field(alias="LONGBRIDGE_ACCESS_TOKEN", default="")
+    etoro_api_key: str = Field(alias="ETORO_API_KEY", default="")
+    etoro_user_key: str = Field(alias="ETORO_USER_KEY", default="")
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +268,13 @@ class APIConfig(_EnvBase):
     enable_session_runtime: EnvBool = Field(alias="ENABLE_SESSION_RUNTIME", default=True)
     vibe_trading_trust_docker_loopback: EnvBool = Field(
         alias="VIBE_TRADING_TRUST_DOCKER_LOOPBACK", default=False,
+    )
+    # Ship the Content-Security-Policy as Report-Only instead of enforcing it.
+    # The policy is enforced by default; this is a rollback switch for a
+    # deployment that serves extra assets the stock policy does not cover
+    # (a reverse proxy injecting a script, a customized frontend build).
+    vibe_trading_csp_report_only: EnvBool = Field(
+        alias="VIBE_TRADING_CSP_REPORT_ONLY", default=False,
     )
     vibe_trading_enable_shell_tools: EnvBool = Field(
         alias="VIBE_TRADING_ENABLE_SHELL_TOOLS", default=False,
