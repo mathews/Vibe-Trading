@@ -54,7 +54,7 @@ class AlphaCompute(Protocol):
 
 
 def _as_float(df: pd.DataFrame) -> pd.DataFrame:
-    if df.dtypes.eq(np.float64).all():
+    if df.dtypes.eq(np.float64).all():  # type: ignore[arg-type]
         return df
     return df.astype(np.float64)
 

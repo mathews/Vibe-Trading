@@ -1,4 +1,3 @@
-
 # ============================================================
 # 中文名称: GTJA #6 - 开盘VWAP偏离
 # 简要说明: (RANK(SIGN(DELTA((((OPEN*0.85)+(HIGH*0.15))), 4)))* -1)，开盘加权价的4日变化方向取反。
@@ -33,20 +32,21 @@ from src.factors.base import (
 
 __alpha_meta__ = {
     "id": "gtja191_006",
-    "theme": ['reversal'],
-    "formula_latex": '(RANK(SIGN(DELTA((OPEN*0.85+HIGH*0.15), 4))) * -1)',
-    "columns_required": ['open', 'high'],
+    "theme": ["reversal"],
+    "formula_latex": "(RANK(SIGN(DELTA((OPEN*0.85+HIGH*0.15), 4))) * -1)",
+    "columns_required": ["open", "high"],
     "extras_required": [],
     "requires_sector": False,
     "universe": ["equity_cn"],
     "frequency": ["1d"],
     "decay_horizon": 4,
     "min_warmup_bars": 5,
-    "notes": 'Sign of 4d change of weighted price; cross-sectionally ranked, negated.',
+    "notes": "Sign of 4d change of weighted price; cross-sectionally ranked, negated.",
 }
 
-def compute(panel: dict) -> pd.DataFrame:
+
+def compute(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
     o = panel["open"]
     h = panel["high"]
     x = o * 0.85 + h * 0.15
-    return -1.0 * rank(np.sign(delta(x, 4)))
+    return -1.0 * rank(np.sign(delta(x, 4)))  # type: ignore[arg-type]

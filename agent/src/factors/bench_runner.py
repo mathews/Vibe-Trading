@@ -26,16 +26,16 @@ import numpy as np
 
 from src.config.accessor import get_env_config
 from src.factors.factor_analysis_core import compute_ic_series
-from src.quantlib.multipletesting import (
-    MIN_OBSERVATIONS,
-    deflated_sharpe_ratio,
-    expected_maximum_sharpe,
-)
 from src.factors.registry import (
     Registry,
     RegistryError,
     SkipAlpha,
     get_default_registry,
+)
+from src.quantlib.multipletesting import (
+    MIN_OBSERVATIONS,
+    deflated_sharpe_ratio,
+    expected_maximum_sharpe,
 )
 from src.tools.alpha_bench_tool import _compute_forward_returns, _load_universe_panel
 
@@ -126,9 +126,7 @@ def theme_breakdown(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
         cat = row["_category"]
         themes = row.get("theme", []) or ["uncategorised"]
         for theme in themes:
-            bucket = by_theme.setdefault(
-                theme, {"alive": 0, "reversed": 0, "dead": 0, "count": 0}
-            )
+            bucket = by_theme.setdefault(theme, {"alive": 0, "reversed": 0, "dead": 0, "count": 0})
             bucket[cat] += 1
             bucket["count"] += 1
     return by_theme
@@ -269,9 +267,7 @@ def run_bench(
                 factor_df = reg.compute(aid, panel)
                 ic = compute_ic_series(factor_df, return_df)
                 if ic.empty:
-                    skipped.append(
-                        {"id": aid, "reason": "empty IC series", "kind": "typed"}
-                    )
+                    skipped.append({"id": aid, "reason": "empty IC series", "kind": "typed"})
                 else:
                     ic_mean = float(ic.mean())
                     ic_std = float(ic.std())
@@ -293,9 +289,7 @@ def run_bench(
                 skipped.append({"id": aid, "reason": str(exc), "kind": "typed"})
             except Exception as exc:  # noqa: BLE001
                 logger.exception("bench: unexpected failure on %s", aid)
-                skipped.append(
-                    {"id": aid, "reason": f"unexpected: {exc}", "kind": "unexpected"}
-                )
+                skipped.append({"id": aid, "reason": f"unexpected: {exc}", "kind": "unexpected"})
 
             if on_progress is not None:
                 try:
@@ -332,7 +326,7 @@ def run_bench(
         try:
             # Could be a pandas object or a plain dict.
             if hasattr(universe_meta_raw, "to_dict"):
-                universe_meta = dict(universe_meta_raw.to_dict())
+                universe_meta = dict(universe_meta_raw.to_dict())  # type: ignore[arg-type]
             else:
                 universe_meta = dict(universe_meta_raw)
         except Exception:  # noqa: BLE001
@@ -375,9 +369,7 @@ def run_bench(
                 n_observations=observations,
                 trial_sharpe_std=ir_dispersion,
             )
-            multiple_testing["deflated_probability"] = round(
-                deflated.deflated_sharpe_ratio, 6
-            )
+            multiple_testing["deflated_probability"] = round(deflated.deflated_sharpe_ratio, 6)
             multiple_testing["survives_deflation"] = deflated.survives
         else:
             multiple_testing["deflated_probability"] = None

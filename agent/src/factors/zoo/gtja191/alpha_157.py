@@ -1,4 +1,3 @@
-
 # ============================================================
 # 中文名称: GTJA Alpha #157
 # 简要说明: 国泰君安191短周期交易型alpha因子第157号，详见公式定义。
@@ -11,6 +10,7 @@ Formula (verbatim from the report):
 
 Notes: PROD(.,1) is identity; we use it directly.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -37,16 +37,16 @@ from src.factors.base import (
 ALPHA_ID = "gtja191_157"
 
 __alpha_meta__ = {
-    'id': 'gtja191_157',
-    'theme': ['volume'],
-    'formula_latex': 'see body',
-    'columns_required': ['close'],
-    'extras_required': [],
-    'universe': ['equity_cn'],
-    'frequency': ['1d'],
-    'decay_horizon': 5,
-    'min_warmup_bars': 12,
-    'notes': 'PROD(.,1) is identity; we use it directly.',
+    "id": "gtja191_157",
+    "theme": ["volume"],
+    "formula_latex": "see body",
+    "columns_required": ["close"],
+    "extras_required": [],
+    "universe": ["equity_cn"],
+    "frequency": ["1d"],
+    "decay_horizon": 5,
+    "min_warmup_bars": 12,
+    "notes": "PROD(.,1) is identity; we use it directly.",
 }
 
 
@@ -65,7 +65,7 @@ def compute(panel):
     inner2 = rank(rank(inner))
     inner3 = ts_min(inner2, 2).rolling(1).sum()
     inner4 = np.log(inner3.replace(0.0, np.nan))
-    left = ts_min(rank(rank(inner4)), 5)
+    left = ts_min(rank(rank(inner4)), 5)  # type: ignore[arg-type]
     right = ts_rank((-1.0 * ret).shift(6), 5)
     out = left + right
     return out
