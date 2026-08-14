@@ -136,6 +136,58 @@ def test_credentials_redacted_in_public_config() -> None:
     assert payload["api_key_configured"] is True
 
 
+def test_check_status_not_configured() -> None:
+    cfg = EtoroConfig(profile="live-readonly", api_key="", user_key="")
+    result = etoro_sdk.check_status(cfg)
+    assert result["status"] == "error"
+    assert result["configured"] is False
+    assert result["connection_state"] == "not_configured"
+    assert result["error_code"] == "credentials_missing"
+
+
+def test_check_status_partial_credentials() -> None:
+    cfg = EtoroConfig(profile="live-readonly", api_key="k", user_key="")
+    result = etoro_sdk.check_status(cfg)
+    assert result["error_code"] == "credentials_partial"
+    assert result["connection_state"] == "not_configured"
+
+
+def test_check_status_connected(monkeypatch) -> None:
+    cfg = EtoroConfig(profile="live-readonly", api_key="k", user_key="u")
+
+    def _transport(method: str, url: str, **kwargs: Any) -> _FakeResponse:
+        if url.endswith("/api/v1/me"):
+            return _FakeResponse(200, {"scopes": ["etoro-public:trade.real:read"], "realCid": 1})
+        if "/aggregate-portfolio" in url:
+            return _FakeResponse(200, {"accountTotals": {"accountCurrentPnl": 1.0}})
+        if url.endswith("/portfolio"):
+            return _FakeResponse(200, {"clientPortfolio": {"credit": 1.0}})
+        raise AssertionError(f"unexpected {method} {url}")
+
+    set_client_factory(lambda c: EtoroClient(cfg, transport=_transport))
+    result = etoro_sdk.check_status(cfg)
+    assert result["status"] == "ok"
+    assert result["configured"] is True
+    assert result["connection_state"] == "connected"
+    assert result["error_code"] is None
+    assert result["last_checked_at"]
+    assert "etoro-public:trade.real:read" in result["account"]["scopes"]
+
+
+def test_check_status_auth_failure_keeps_configured(monkeypatch) -> None:
+    cfg = EtoroConfig(profile="live-readonly", api_key="k", user_key="u")
+
+    def _transport(method: str, url: str, **kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(401, {"error": "unauthorized"})
+
+    set_client_factory(lambda c: EtoroClient(cfg, transport=_transport))
+    result = etoro_sdk.check_status(cfg)
+    assert result["status"] == "error"
+    assert result["configured"] is True
+    assert result["connection_state"] == "error"
+    assert result["error_code"] == "authentication_failed"
+
+
 def test_get_account_snapshot_uses_aggregate_portfolio_for_pnl(monkeypatch) -> None:
     cfg = EtoroConfig(profile="live", api_key="k", user_key="u")
     captured_urls: list[str] = []

@@ -20,12 +20,12 @@ updates:
       # not an oversight. Revisit as a dedicated migration, not a dep bump.
       - dependency-name: "pandas"
         update-types: ["version-update:semver-major"]
-      # caio is capped by our own dependency tree, not by choice: aiofile
-      # 3.11.1 (latest) requires caio~=0.9.0, so any bump to caio 0.10.x makes
-      # `pip install` unresolvable. Dependabot kept proposing it and the group
-      # PR failed CI with ResolutionImpossible. Drop this ignore once aiofile
-      # ships a release that accepts caio 0.10.
+      # aiofile 3.12.3 requires caio~=0.12.0. Allow compatible caio patch
+      # updates, but suppress 0.13+ until aiofile widens the accepted series.
       - dependency-name: "caio"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
       # websockets is likewise capped by our tree: langgraph-sdk 0.4.2 requires
       # websockets<16, so a bump to 16.x is unresolvable. Drop this once
       # langgraph-sdk widens its range.

@@ -32,6 +32,9 @@ _MARKET_PATTERNS = [
     (re.compile(r"^[A-Z0-9&.\-]+\.(NS|BO)$", re.I), "india_equity"),
     # Korea equities: KOSPI (005930.KS) / KOSDAQ (247540.KQ), 6-digit codes.
     (re.compile(r"^\d{6}\.(KS|KQ)$", re.I), "kr_equity"),
+    # Canada equities: Toronto Stock Exchange (TD.TO) and TSX Venture
+    # (PNG.V). Yahoo carries both suffixes verbatim.
+    (re.compile(r"^[A-Z0-9&.\-]+\.(TO|V)$", re.I), "ca_equity"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "crypto"),
     (re.compile(r"^[A-Z]+/USDT$", re.I), "crypto"),
     # yfinance's native crypto spelling (BTC-USD, ETH-USD). Distinct from
@@ -67,6 +70,7 @@ _MARKET_CURRENCY = {
     "hk_equity": "HKD",
     "india_equity": "INR",
     "kr_equity": "KRW",
+    "ca_equity": "CAD",
     # Every crypto pattern in _MARKET_PATTERNS is USDT-quoted, and USDT is
     # carried at its USD peg. This is the one approximation in the table: a
     # depeg would make a crypto+US book wrong by the depeg amount, which is
@@ -135,7 +139,8 @@ def _detect_market(code: str) -> str:
         code: Ticker / symbol string.
 
     Returns:
-        Market type (a_share/us_equity/hk_equity/crypto/futures/forex).
+        Market type (a_share/us_equity/hk_equity/india_equity/kr_equity/
+        ca_equity/crypto/futures/forex).
         Bare 1-5 letter alphabetic tickers resolve to ``us_equity``;
         any other unknown format defaults to ``a_share``.
     """
@@ -177,17 +182,20 @@ def _is_china_futures(code: str) -> bool:
 
 
 def _detect_submarket(codes: List[str]) -> str:
-    """Detect US vs HK from symbol suffixes.
+    """Detect US, HK, or Canada from symbol suffixes.
 
     Args:
         codes: Instrument codes.
 
     Returns:
-        ``"hk"`` if any code ends with ``.HK``, else ``"us"``.
+        ``"hk"`` for ``.HK``, ``"ca"`` for ``.TO``/``.V``, else ``"us"``.
     """
     for code in codes:
-        if code.upper().endswith(".HK"):
+        upper = code.upper()
+        if upper.endswith(".HK"):
             return "hk"
+        if upper.endswith((".TO", ".V")):
+            return "ca"
     return "us"
 
 # ── Crypto: OKX tiered maintenance margin table (simplified) ──

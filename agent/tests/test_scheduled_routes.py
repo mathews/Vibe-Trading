@@ -174,6 +174,7 @@ def test_delete_removes_job_and_returns_204(
 
     assert response.status_code == 204
     assert not response.content
+    assert "content-type" not in response.headers
     assert store.get("cancel-me") is None
 
 

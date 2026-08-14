@@ -6,8 +6,6 @@ import json
 import os
 from pathlib import Path
 
-import pytest
-
 from src.agent.loop import (
     KEEP_RECENT,
     COLLAPSE_PRESERVE_RECENT,
@@ -19,6 +17,7 @@ from src.agent.loop import (
     _fix_tool_pairs,
     _is_tool_success,
     _normalize_tool_run_dir,
+    _archive_backtest_result,
 )
 
 
@@ -327,3 +326,69 @@ class TestNormalizeToolRunDir:
         args = {"run_dir": absolute_run_dir}
         out = _normalize_tool_run_dir(args, "/tmp/run_123")
         assert out["run_dir"] == absolute_run_dir
+
+
+class TestArchiveBacktestResult:
+    def test_copies_detached_backtest_into_active_run(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", str(tmp_path))
+        source = tmp_path / "detached"
+        active = tmp_path / "active"
+        (source / "artifacts").mkdir(parents=True)
+        (source / "code").mkdir()
+        (source / "artifacts" / "metrics.csv").write_text(
+            "total_return,sharpe\n0.12,1.1\n", encoding="utf-8"
+        )
+        (source / "artifacts" / "equity.csv").write_text(
+            "timestamp,equity\n2026-01-01,1\n", encoding="utf-8"
+        )
+        (source / "code" / "signal_engine.py").write_text("pass\n", encoding="utf-8")
+        (source / "config.json").write_text("{}\n", encoding="utf-8")
+
+        archived = _archive_backtest_result(
+            json.dumps({"status": "ok", "run_dir": str(source)}), str(active)
+        )
+
+        assert archived is True
+        assert (active / "artifacts" / "metrics.csv").is_file()
+        assert (active / "artifacts" / "equity.csv").is_file()
+        assert (active / "code" / "signal_engine.py").is_file()
+        assert (active / "config.json").is_file()
+
+    def test_ignores_result_without_metrics(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", str(tmp_path))
+        source = tmp_path / "not-a-backtest"
+        source.mkdir()
+
+        archived = _archive_backtest_result(
+            json.dumps({"status": "ok", "run_dir": str(source)}), str(tmp_path / "active")
+        )
+
+        assert archived is False
+
+    def test_refuses_a_source_outside_the_allowed_run_roots(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The copy loop validates the path itself, not just upstream.
+
+        ``run_dir`` is read back out of a tool result here, so the check that
+        makes it safe must live in this function rather than in the tool that
+        produced the string.
+        """
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        (outside / "artifacts").mkdir(parents=True)
+        (outside / "artifacts" / "metrics.csv").write_text(
+            "total_return\n0.5\n", encoding="utf-8"
+        )
+        active = allowed / "active"
+        active.mkdir(parents=True)
+        monkeypatch.setenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", str(allowed))
+
+        archived = _archive_backtest_result(
+            json.dumps({"status": "ok", "run_dir": str(outside)}), str(active)
+        )
+
+        assert archived is False
+        assert not (active / "artifacts").exists()

@@ -38,6 +38,11 @@ class DataLoader:
 
     name = "tencent"
     markets = {"a_share", "hk_equity"}
+    # Volume unit is market-dependent (HKUDS/Vibe-Trading#1062): the A-share
+    # endpoint reports board lots (1 lot = 100 shares) while the HK endpoint
+    # reports single shares. Empirically verified 2026-08-11 against
+    # 600519.SH (55,128 lots) and 00700.HK (31,100,240 shares).
+    volume_units = {"a_share": "lots", "hk_equity": "shares"}
     requires_auth = False
 
     def is_available(self) -> bool:

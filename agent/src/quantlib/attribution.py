@@ -45,6 +45,20 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+#: Public surface. `quantlib_call` dispatches on ``__all__`` alone, so a module
+#: without it is unreachable from Web / API / MCP even when the tool allowlists
+#: it — which is exactly what happened to this module until 0.1.13.
+__all__ = [
+    "DEFAULT_WEIGHT_SUM_TOLERANCE",
+    "BrinsonResult",
+    "LinkedAttribution",
+    "LinkedSectorEffect",
+    "SectorEffect",
+    "brinson_fachler",
+    "carino_factor",
+    "carino_link",
+]
+
 #: Largest tolerated difference between the portfolio and benchmark weight sums.
 #: Beyond this the Brinson identity stops holding, so it is an error, not a warning.
 DEFAULT_WEIGHT_SUM_TOLERANCE = 1e-9

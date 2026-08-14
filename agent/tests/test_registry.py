@@ -132,8 +132,14 @@ class TestProtocol:
 
 class TestFallbackChains:
     def test_all_expected_markets_present(self) -> None:
-        expected = {"a_share", "us_equity", "hk_equity", "india_equity", "kr_equity", "crypto", "futures", "fund", "macro", "forex"}
+        expected = {
+            "a_share", "us_equity", "hk_equity", "india_equity", "kr_equity",
+            "ca_equity", "crypto", "futures", "fund", "macro", "forex",
+        }
         assert expected == set(FALLBACK_CHAINS.keys())
+
+    def test_canada_chain_uses_only_compatible_sources(self) -> None:
+        assert FALLBACK_CHAINS["ca_equity"] == ["yahoo", "yfinance", "local"]
 
     def test_chains_are_non_empty(self) -> None:
         for market, chain in FALLBACK_CHAINS.items():

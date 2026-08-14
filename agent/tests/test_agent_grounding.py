@@ -10,7 +10,12 @@ from typing import Any, Callable
 import pytest
 
 from src.agent.context import ContextBuilder
-from src.agent.grounding import GroundingLedger
+from src.agent.grounding import (
+    GroundingLedger,
+    _infer_currency,
+    _infer_venue,
+    _scan_symbols,
+)
 from src.agent.loop import AgentLoop, _is_tool_success
 from src.agent.tools import BaseTool, ToolRegistry
 from src.agent.trace import TraceWriter
@@ -164,6 +169,15 @@ def _build_direct_agent(
     return agent, resolver, market, private_skill, TraceWriter(run_dir)
 
 
+def test_canadian_symbols_have_grounding_identity() -> None:
+    """TSX and TSXV symbols retain venue and CAD identity."""
+    assert _scan_symbols("Compare TD.TO with PNG.V") == {"TD.TO", "PNG.V"}
+    assert _infer_venue("TD.TO") == "toronto"
+    assert _infer_venue("PNG.V") == "tsx_venture"
+    assert _infer_currency("TD.TO") == "CAD"
+    assert _infer_currency("PNG.V") == "CAD"
+
+
 def test_ok_false_tool_envelope_is_failure() -> None:
     """Business failures must not be recorded as successful tool calls (#886)."""
     assert _is_tool_success('{"ok": false, "error": "upstream failed"}') is False
@@ -203,7 +217,7 @@ def test_resolver_and_consumer_in_same_batch_cannot_race(
 
     assert resolver.calls == 1
     assert market.calls == 0
-    assert agent._grounding.authorized_symbols == {"562500.SS"}
+    assert agent._grounding.authorized_symbols == {"562500.SH"}
     blocked = [json.loads(message["content"]) for message in messages]
     assert any(item.get("error_code") == "identity_required" for item in blocked)
 
@@ -280,31 +294,91 @@ def test_market_sensitive_skill_waits_for_prior_identity_batch(
     assert skill.calls == 1
 
 
-def test_bare_us_ticker_is_allowed_only_for_explicit_transport_contract(
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("get_sec_filings", {"ticker": "AAPL"}),
+        ("get_market_data", {"codes": ["AAPL"]}),
+        ("get_fundamentals", {"symbols": ["AAPL"]}),
+        ("technical_indicators", {"symbol": "AAPL"}),
+        ("portfolio_risk_xray", {"symbols": ["AAPL"]}),
+        ("trading_history", {"symbol": "AAPL"}),
+    ],
+)
+def test_bare_ticker_is_allowed_whenever_it_names_one_locked_identity(
     tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, Any],
 ) -> None:
-    """SEC's bare ticker consumes AAPL.US without permitting venue aliases."""
+    """A bare ticker is safe by uniqueness, not by a hand-maintained tool list.
+
+    Every spelling here is the first example in that tool's own parameter
+    schema. The list this replaced named nine tools, so the other five were
+    rejected for using their documented contract.
+    """
     ledger = GroundingLedger(
         run_dir=tmp_path,
         user_message="请分析 AAPL.US 的价格",
     )
 
-    sec = ledger.authorize_tool_call(
-        "get_sec_filings",
-        {"ticker": "AAPL"},
+    authorization = ledger.authorize_tool_call(
+        tool_name,
+        arguments,
         batch_authorized_symbols=ledger.authorized_symbols,
-        call_id="sec",
+        call_id="consumer",
     )
-    market_alias = ledger.authorize_tool_call(
+
+    assert authorization.allowed is True
+
+
+def test_bare_ticker_stays_blocked_when_it_names_more_than_one_identity(
+    tmp_path: Path,
+) -> None:
+    """Uniqueness is the whole guarantee, so a shared base must not resolve."""
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="对比 600519.SH 与 600519.SZ 的价格",
+    )
+
+    authorization = ledger.authorize_tool_call(
         "get_market_data",
-        {"codes": ["AAPL"]},
+        {"codes": ["600519"]},
         batch_authorized_symbols=ledger.authorized_symbols,
         call_id="prices",
     )
 
-    assert sec.allowed is True
-    assert market_alias.allowed is False
-    assert market_alias.error_code == "identity_mismatch"
+    assert ledger.authorized_symbols == {"600519.SH", "600519.SZ"}
+    assert authorization.allowed is False
+    assert authorization.error_code == "identity_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("locked", "requested"),
+    [
+        ("600519.SH", "600519.SS"),
+        ("600519.SH", "sh600519"),
+        ("00700.HK", "700.HK"),
+        ("00700.HK", "0700.HK"),
+        ("BTC-USDT", "BTC/USDT"),
+    ],
+)
+def test_provider_spellings_of_one_instrument_are_one_identity(
+    tmp_path: Path,
+    locked: str,
+    requested: str,
+) -> None:
+    """A suffix convention, an exchange prefix, or a separator is not a venue."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message=f"{locked} 现价多少")
+
+    authorization = ledger.authorize_tool_call(
+        "get_market_data",
+        {"codes": [requested]},
+        batch_authorized_symbols=ledger.authorized_symbols,
+        call_id="prices",
+    )
+
+    assert ledger.authorized_symbols == {locked}
+    assert authorization.allowed is True
 
 
 def test_stale_history_identity_does_not_unlock_new_subject(tmp_path: Path) -> None:
@@ -373,10 +447,14 @@ def test_single_clean_not_found_source_is_not_enough_for_private_routing(
     assert json.loads(messages[-1]["content"])["error_code"] == "identity_required"
 
 
-def test_explicit_symbol_and_resolver_suffix_alias_become_conflicting(
+def test_explicit_symbol_and_resolver_suffix_alias_are_one_identity(
     tmp_path: Path,
 ) -> None:
-    """A later .SH resolver result cannot silently replace explicit .SS identity."""
+    """``.SS`` and ``.SH`` name the same Shanghai listing, not a contradiction.
+
+    Reading them as rivals is what made every Shanghai query unusable: the two
+    sources publish one listing under both spellings, so no tie-break existed.
+    """
     ledger = GroundingLedger(
         run_dir=tmp_path,
         user_message="请分析 562500.SS 并给出买入价",
@@ -397,15 +475,44 @@ def test_explicit_symbol_and_resolver_suffix_alias_become_conflicting(
         call_id="prices",
     )
 
+    assert ledger.identity_status == "locked"
+    assert ledger.authorized_symbols == {"562500.SH"}
+    assert authorization.allowed is True
+
+
+def test_resolver_answering_a_different_venue_is_still_conflicting(
+    tmp_path: Path,
+) -> None:
+    """Folding a suffix alias must not fold a genuinely different exchange."""
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="请分析 600519.SH 并给出买入价",
+    )
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "600519.SH"},
+        result=_resolver_payload("600519.SZ", query="600519.SH"),
+        call_id="resolver-venue",
+        success=True,
+    )
+
+    authorization = ledger.authorize_tool_call(
+        "get_market_data",
+        {"codes": ["600519.SZ"]},
+        batch_authorized_symbols=ledger.authorized_symbols,
+        batch_identity_status=ledger.identity_status,
+        call_id="prices",
+    )
+
     assert ledger.identity_status == "conflicting"
     assert authorization.allowed is False
     assert authorization.error_code == "identity_conflict"
 
 
-def test_locked_symbol_rejects_silent_exchange_suffix_rewrite(
+def test_locked_symbol_rejects_silent_exchange_rewrite(
     tmp_path: Path,
 ) -> None:
-    """The consumer may not silently turn the resolver's .SS into .SH."""
+    """The consumer may not move the locked listing to another exchange."""
     agent, _, market, _, trace = _build_direct_agent(tmp_path, _resolver_payload())
     messages: list[dict[str, Any]] = []
     react_trace: list[dict[str, Any]] = []
@@ -419,7 +526,7 @@ def test_locked_symbol_rejects_silent_exchange_suffix_rewrite(
         1,
     )
     agent._process_tool_calls(
-        [_tool_call("wrong-suffix", "get_market_data", codes=["562500.SH"])],
+        [_tool_call("wrong-venue", "get_market_data", codes=["562500.SZ"])],
         ContextBuilder,
         messages,
         trace,
@@ -582,6 +689,86 @@ def test_final_numeric_gate_rejects_known_trace_contradiction(tmp_path: Path) ->
     assert bad.valid is False
     assert any(issue["code"] == "numeric_claim_conflict" for issue in bad.issues)
     assert good.valid is True
+
+
+def test_run_dir_ohlc_csv_is_observed_evidence(tmp_path: Path) -> None:
+    """A bash-written OHLC CSV grounds the prices the answer quotes.
+
+    The bash+yfinance workaround writes per-symbol CSVs into the run directory
+    (e.g. ``data/raw/BYN_V.csv``) instead of returning bars through
+    ``get_market_data``. Those prices are real observed output, so the final
+    answer may cite them; a price outside the file must still be rejected.
+    """
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "BYN_V.csv").write_text(
+        "Date,Open,High,Low,Close,Adj Close,Volume\n"
+        "2026-08-06,0.35,0.37,0.34,0.36,0.36,500000\n"
+        "2026-08-07,0.36,0.38,0.355,0.375,0.375,600000\n",
+        encoding="utf-8",
+    )
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="请分析 BYN.V 并推荐买入价",
+    )
+
+    inside = ledger.validate_final_answer(
+        "BYN.V（yfinance，CAD）在 2026-08-07 的已观测收盘价为 0.375。"
+    )
+    fabricated = ledger.validate_final_answer(
+        "BYN.V（yfinance，CAD）在 2026-08-07 的已观测收盘价为 0.88。"
+    )
+
+    assert inside.valid is True, inside.issues
+    assert fabricated.valid is False
+    assert any(issue["code"] == "numeric_claim_conflict" for issue in fabricated.issues)
+
+
+def test_run_dir_ohlc_csv_tsx_filename_maps_symbol(tmp_path: Path) -> None:
+    """PDI_TO.csv maps to PDI.TO and grounds its CAD price."""
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "PDI_TO.csv").write_text(
+        "Date,Open,High,Low,Close\n"
+        "2026-08-07,10.0,10.5,9.9,10.2\n",
+        encoding="utf-8",
+    )
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="请分析 PDI.TO 并推荐买入价",
+    )
+
+    good = ledger.validate_final_answer(
+        "PDI.TO（yfinance，CAD）在 2026-08-07 的已观测收盘价为 10.2。"
+    )
+
+    assert good.valid is True, good.issues
+
+
+def test_run_dir_ohlc_csv_stray_symbol_is_ignored(tmp_path: Path) -> None:
+    """A CSV for a symbol the run never handled does not mint identity."""
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "ZZZ_US.csv").write_text(
+        "Date,Open,High,Low,Close\n"
+        "2026-08-07,100.0,100.0,100.0,100.0\n",
+        encoding="utf-8",
+    )
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="请分析 BYN.V 并推荐买入价",
+    )
+
+    result = ledger.validate_final_answer(
+        "ZZZ.US（yfinance，USD）在 2026-08-07 的已观测收盘价为 100.0。"
+    )
+
+    # The symbol is not entitled, so the price cannot be grounded.
+    assert result.valid is False
+    assert any(
+        issue["code"] in {"numeric_claim_unavailable", "canonical_symbol_not_surfaced"}
+        for issue in result.issues
+    )
 
 
 def test_numeric_gate_validates_derived_formula_and_provenance(tmp_path: Path) -> None:
@@ -1108,6 +1295,176 @@ def test_plan_level_mask_leaves_observed_quotes_checked(
     assert GroundingLedger._numbers_without_dates_or_percent(segment) == expected
 
 
+# A currency token between the anchor and the number used to break every
+# prospective branch: "收盘 <$2.86" left 2.86 to be compared against observed
+# OHLC, "目标位 $6.80" left 6.8, and "trigger at $119.68" left 119.68. These
+# are levels, not observed quotes, so each must mask entirely.
+_CURRENCY_PREFIXED_PLAN_LEVELS = [
+    "收盘 <$2.86",
+    "目标位 $6.80，止损位 C$5.20",
+    "trigger at $119.68",
+    "支撑位 $190.12",
+    "target price of $6.80",
+    "收盘 ≥ $135 且低点 > $119.68",
+]
+
+
+@pytest.mark.parametrize(
+    "segment", _CURRENCY_PREFIXED_PLAN_LEVELS, ids=range(len(_CURRENCY_PREFIXED_PLAN_LEVELS))
+)
+def test_currency_prefixed_plan_levels_are_not_read_as_observed_prices(segment: str) -> None:
+    """A currency-prefixed trigger or target is prospective, not observed."""
+    assert GroundingLedger._numbers_without_dates_or_percent(segment) == []
+
+
+# A historical reference names a price the instrument once traded at. The
+# SPCX.US weekly plan quoted "6/16 ATH 225.64" next to the 8/12 high 149.60;
+# 225.64 fell outside the session's observed OHLC range (105.11–149.6) and was
+# rejected as a conflict even though it is a reference, not a current quote.
+_REFERENCE_LEVEL_SEGMENTS = [
+    ("8/12 高 149.60 为 6/16 ATH 225.64 以来最高", [149.60]),
+    ("8/12 高 149.60 为 6/16 历史高点 225.64 以来最高", [149.60]),
+    ("8/12 高 149.60 为 6/16 all-time high 225.64 以来最高", [149.60]),
+    ("52W 高 543.14", []),
+    ("52-week low of $190.12", []),
+    ("52W low (C$7.27)", []),
+    ("历史最低 $60.82", []),
+    ("ATH (C$7.31)", []),
+]
+
+
+@pytest.mark.parametrize(
+    "segment,expected",
+    _REFERENCE_LEVEL_SEGMENTS,
+    ids=[c[0][:28] for c in _REFERENCE_LEVEL_SEGMENTS],
+)
+def test_reference_levels_are_not_read_as_observed_price_claims(
+    segment: str, expected: list[float],
+) -> None:
+    """An ATH/52-week/historical extreme is a reference, not a current quote."""
+    assert GroundingLedger._numbers_without_dates_or_percent(segment) == expected
+
+
+# A validation report cites a plan file by line number ("~line 206",
+# "第 206 行"). The number is a document location, not a price, and was
+# compared against observed OHLC as a claim before this mask existed.
+_LINE_REFERENCE_SEGMENTS = [
+    "**文档 ~line 206「8/12 高 149.60 为 6/16 ATH 225.64 以来最高」不成立",
+    "line 206",
+    "lines 206-208",
+    "第 206 行",
+    "第 206–208 行",
+    "行 206",
+]
+
+
+@pytest.mark.parametrize(
+    "segment", _LINE_REFERENCE_SEGMENTS, ids=range(len(_LINE_REFERENCE_SEGMENTS))
+)
+def test_line_number_references_are_not_read_as_price_claims(segment: str) -> None:
+    """A line citation is a document location, not an observed price."""
+    if segment.startswith("**文档"):
+        # The quoted 149.60 beside the line citation stays checked.
+        assert GroundingLedger._numbers_without_dates_or_percent(segment) == [149.6]
+    else:
+        assert GroundingLedger._numbers_without_dates_or_percent(segment) == []
+
+
+# Validation summaries count findings: "1 项事实错误", "2 项不一致", and
+# "16 个交易日" are count nouns, not prices. The count survived extraction
+# and was rejected against the observed OHLC range before 项/个交易日 joined
+# the quantity units.
+_COUNT_NOUN_SEGMENTS = [
+    ("- ❌ **1 项事实错误**:", []),
+    ("⚠️ **2 项不一致**", []),
+    ("3 项", []),
+    ("16 个交易日", []),
+    # 149.60 is masked here too: "高点高于 149.60" is a comparison level.
+    ("6/17–7/10 有 16 个交易日高点高于 149.60", []),
+]
+
+
+@pytest.mark.parametrize(
+    "segment,expected",
+    _COUNT_NOUN_SEGMENTS,
+    ids=[c[0][:22] for c in _COUNT_NOUN_SEGMENTS],
+)
+def test_count_nouns_are_not_read_as_price_claims(
+    segment: str, expected: list[float],
+) -> None:
+    """项/个交易日 counts are quantities, not prices."""
+    assert GroundingLedger._numbers_without_dates_or_percent(segment) == expected
+
+
+_SINCE_REFERENCE_SEGMENTS = [
+    ("正确为 7/10(150.57)以来最高", []),
+    ("收 146.15 为 7/9(收 152.16)以来最高", [146.15]),
+    ("highest since 7/10 (150.57)", []),
+    # The current bar's own high is not a since-reference and stays checked.
+    ("8/12 高 149.60 为 6/16 ATH 225.64 以来最高", [149.6]),
+]
+
+
+@pytest.mark.parametrize(
+    "segment,expected",
+    _SINCE_REFERENCE_SEGMENTS,
+    ids=[c[0][:24] for c in _SINCE_REFERENCE_SEGMENTS],
+)
+def test_since_references_are_not_read_as_observed_price_claims(
+    segment: str, expected: list[float],
+) -> None:
+    """A date-anchored "highest since" value is a reference, not a quote."""
+    assert GroundingLedger._numbers_without_dates_or_percent(segment) == expected
+
+
+_NUMBERED_HEADING_SEGMENTS = [
+    "### 6. 关键价位/旁证核验",
+    "## 12. 结论",
+    "# 3. 身份与数据源",
+    "### 8/13 周中判定",
+    # The section number masks; the observed quote beside it stays checked.
+    ("### 6. 8/12 高 149.60 为 6/16 ATH 以来最高", [149.6]),
+]
+
+
+@pytest.mark.parametrize(
+    "segment", _NUMBERED_HEADING_SEGMENTS, ids=range(len(_NUMBERED_HEADING_SEGMENTS))
+)
+def test_numbered_headings_are_not_read_as_price_claims(segment: str) -> None:
+    """A markdown heading number is a section index, not a price."""
+    if isinstance(segment, tuple):
+        segment, expected = segment
+        assert GroundingLedger._numbers_without_dates_or_percent(segment) == expected
+    else:
+        assert GroundingLedger._numbers_without_dates_or_percent(segment) == []
+
+
+_RATIO_AND_FX_SEGMENTS = [
+    ("TO 报价实际是按 6:1 平价锚定的", []),
+    ("25/25 行 OHLCV、25/25 项派生百分比、7/7 日 CDR 6:1 折算", []),
+    ("远小于当前 USD/CAD≈1.36 的量级", []),
+    ("汇率 1.36", []),
+    # `EUR/USD` is this project's canonical forex symbol, so an asserted pair
+    # rate is a quote and stays checked; only an approximated conversion basis
+    # is masked. Masking both would let an invented FX rate through the gate.
+    ("usd/cad=1.36", [1.36]),
+    ("USD/CAD 1.36", [1.36]),
+    ("USD/CAD ≈ 1.36", []),
+]
+
+
+@pytest.mark.parametrize(
+    "segment,expected",
+    _RATIO_AND_FX_SEGMENTS,
+    ids=[c[0][:24] for c in _RATIO_AND_FX_SEGMENTS],
+)
+def test_ratios_and_fx_rates_are_not_read_as_price_claims(
+    segment: str, expected: list[float],
+) -> None:
+    """A conversion ratio or forex rate is not an instrument quote."""
+    assert GroundingLedger._numbers_without_dates_or_percent(segment) == expected
+
+
 def test_plan_level_mask_does_not_shield_a_wrong_quote_end_to_end(tmp_path: Path) -> None:
     """The end-to-end gate still rejects a fabricated quote beside a plan level."""
     ledger = _screened_ledger(tmp_path)
@@ -1130,3 +1487,640 @@ def test_plan_level_alone_reaches_a_valid_answer(tmp_path: Path) -> None:
     )
 
     assert result.valid is True, result.issues
+
+
+def _spcx_us_ledger(tmp_path: Path) -> GroundingLedger:
+    """A ledger that locked SPCX.US and observed 8/7–8/12 OHLC bars."""
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="以 SPCX.US（纳斯达克，SpaceX 本体）作为美股侧参考",
+    )
+    query = "SPCX.US"
+    ledger.authorize_tool_call(
+        "search_symbol",
+        {"query": query},
+        batch_authorized_symbols=ledger.authorized_symbols,
+        call_id="resolve",
+    )
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": query},
+        result=_resolver_payload(symbol="SPCX.US", query=query),
+        call_id="resolve",
+        success=True,
+    )
+    payload = json.dumps(
+        {
+            "SPCX.US": [
+                {
+                    "trade_date": "2026-08-07",
+                    "open": 114.97,
+                    "high": 133.48,
+                    "low": 114.53,
+                    "close": 133.11,
+                    "volume": 242130700,
+                },
+                {
+                    "trade_date": "2026-08-10",
+                    "open": 134.95,
+                    "high": 139.26,
+                    "low": 130.17,
+                    "close": 138.74,
+                    "volume": 169934300,
+                },
+                {
+                    "trade_date": "2026-08-11",
+                    "open": 138.66,
+                    "high": 139.98,
+                    "low": 130.50,
+                    "close": 133.29,
+                    "volume": 108900600,
+                },
+                {
+                    "trade_date": "2026-08-12",
+                    "open": 135.05,
+                    "high": 149.60,
+                    "low": 134.01,
+                    "close": 146.15,
+                    "volume": 165771792,
+                },
+            ],
+            "_provenance": {
+                "SPCX.US": {
+                    "source": "yahoo",
+                    "requested_source": "auto",
+                    "detected_source": "yahoo",
+                    "fallback_used": False,
+                    "currency_conversion": "none",
+                }
+            },
+        },
+        ensure_ascii=False,
+    )
+    ledger.ingest_tool_result(
+        tool_name="get_market_data",
+        arguments={"codes": ["SPCX.US"]},
+        result=payload,
+        call_id="prices",
+        success=True,
+    )
+    return ledger
+
+
+def test_reference_level_and_currency_thresholds_pass_end_to_end(tmp_path: Path) -> None:
+    """The SPCX.US verdict prose passes once references and thresholds mask."""
+    ledger = _spcx_us_ledger(tmp_path)
+
+    result = ledger.validate_final_answer(
+        "SPCX.US 8/10 收 138.74 USD、8/12 高 149.60 USD（source: yahoo）。"
+        "8/12 高 149.60 为 6/16 ATH 225.64 以来最高；"
+        "8/10 收盘 138.74 ≥ $135 且 ≥ $119.68 触发成立。"
+    )
+
+    assert result.valid is True, result.issues
+
+
+def test_validation_summary_with_counts_and_line_cites_passes_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """A validation verdict naming counts and line citations passes the gate."""
+    ledger = _spcx_us_ledger(tmp_path)
+
+    result = ledger.validate_final_answer(
+        "SPCX.US 核验(USD, source: yahoo):❌ 1 项事实错误 — "
+        "文档 ~line 206「8/12 高 149.60 为 6/16 ATH 以来最高」不成立,"
+        "6/17–7/10 有 16 个交易日高点高于 149.60,正确为 7/10(150.57)以来最高。"
+    )
+
+    assert result.valid is True, result.issues
+
+
+def _shanghai_shortlist() -> str:
+    """One Shanghai listing as the two sources actually publish it."""
+    return _resolver_payload(
+        candidates=[
+            {
+                "symbol": "600519.SH",
+                "name": "贵州茅台",
+                "market": "cn",
+                "type": "沪A",
+                "source": "eastmoney",
+            },
+            {
+                "symbol": "600519.SS",
+                "name": "Kweichow Moutai Co Ltd",
+                "market": "cn",
+                "type": "EQUITY",
+                "source": "yahoo",
+            },
+        ],
+        query="600519",
+    )
+
+
+def test_shanghai_ticker_resolves_to_one_locked_identity(tmp_path: Path) -> None:
+    """Eastmoney's .SH and Yahoo's .SS describe one listing, so one lock."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="600519 现价多少")
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "600519"},
+        result=_shanghai_shortlist(),
+        call_id="resolve",
+        success=True,
+    )
+
+    assert ledger.identity_status == "locked"
+    assert ledger.authorized_symbols == {"600519.SH"}
+
+
+def test_shanghai_lock_depends_on_symbol_canonicalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation guard: drop canonicalization and Shanghai dead-ends again."""
+    monkeypatch.setattr(
+        "src.agent.grounding._normalize_symbol",
+        lambda value: str(value or "").strip().upper(),
+    )
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="600519 现价多少")
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "600519"},
+        result=_shanghai_shortlist(),
+        call_id="resolve",
+        success=True,
+    )
+
+    assert ledger.identity_status == "ambiguous"
+    assert ledger.authorized_symbols == set()
+
+
+def test_zero_candidates_with_a_skipped_source_are_not_found(tmp_path: Path) -> None:
+    """A source that cannot serve the query shape does not block the answer.
+
+    The counterpart — a source that actually failed — is covered by
+    ``test_single_clean_not_found_source_is_not_enough_for_private_routing``,
+    which must keep reporting ``invalidated``.
+    """
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="这家公司现在股价多少")
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "某某不存在公司"},
+        result=json.dumps(
+            {
+                "ok": True,
+                "source": "symbol_search",
+                "data": {
+                    "query": "某某不存在公司",
+                    "count": 0,
+                    "candidates": [],
+                    "sources": {
+                        "eastmoney": "ok",
+                        "yahoo": "skipped: non-ASCII query is not supported",
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        call_id="resolve",
+        success=True,
+    )
+
+    assert ledger.identity_status == "not_found"
+    assert ledger.validate_final_answer("没有查到这家公司，无法给出结论。").valid is True
+
+
+def test_a_failed_side_query_does_not_retract_a_locked_identity(
+    tmp_path: Path,
+) -> None:
+    """One flaky resolver call must not end the run's ability to answer."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="茅台现价多少")
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "茅台"},
+        result=json.dumps({"ok": False, "error": "timeout"}),
+        call_id="flaky",
+        success=False,
+    )
+    assert ledger.identity_status == "invalidated"
+
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "贵州茅台"},
+        result=_resolver_payload("600519.SH", query="贵州茅台"),
+        call_id="retry",
+        success=True,
+    )
+
+    assert ledger.identity_status == "locked"
+    assert ledger.authorize_tool_call(
+        "get_market_data",
+        {"codes": ["600519.SH"]},
+        batch_authorized_symbols=ledger.authorized_symbols,
+        batch_identity_status=ledger.identity_status,
+        call_id="prices",
+    ).allowed is True
+
+
+def test_a_conflict_outranks_a_lock_from_another_query(tmp_path: Path) -> None:
+    """A contradiction is a fact about the data, so a lock cannot mask it."""
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="对比 600519.SH 和 AAPL.US 的现价",
+    )
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "600519.SH"},
+        result=_resolver_payload("600519.SZ", query="600519.SH"),
+        call_id="venue-swap",
+        success=True,
+    )
+
+    assert ledger.identity_status == "conflicting"
+
+
+def _cny_ledger(tmp_path: Path) -> GroundingLedger:
+    """A ledger holding one Shanghai quote sourced from yahoo, priced in CNY."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="562500.SH 现价多少")
+    ledger.ingest_tool_result(
+        tool_name="get_market_data",
+        arguments={"codes": ["562500.SH"]},
+        result=_market_payload(),
+        call_id="prices",
+        success=True,
+    )
+    return ledger
+
+
+def test_a_chinese_answer_may_name_its_source_and_currency_in_chinese(
+    tmp_path: Path,
+) -> None:
+    """The answer follows the user's language; the gate must read that language."""
+    result = _cny_ledger(tmp_path).validate_final_answer(
+        "562500.SH 最新收盘价 1.171 元，数据来源：雅虎财经。"
+    )
+
+    assert result.valid is True, result.issues
+
+
+def test_another_currencys_yuan_does_not_satisfy_a_cny_requirement(
+    tmp_path: Path,
+) -> None:
+    """A bare 元 counts for CNY only when no other currency's character owns it."""
+    result = _cny_ledger(tmp_path).validate_final_answer(
+        "562500.SH 最新收盘价 1.171 港元，数据来源：雅虎财经。"
+    )
+
+    assert result.valid is False
+    assert "currency_not_surfaced" in {issue["code"] for issue in result.issues}
+
+
+def test_an_unnamed_source_is_still_reported(tmp_path: Path) -> None:
+    """Accepting a localized provider name is not accepting no provider name."""
+    result = _cny_ledger(tmp_path).validate_final_answer("562500.SH 最新收盘价 1.171 元。")
+
+    assert result.valid is False
+    assert "data_source_not_surfaced" in {issue["code"] for issue in result.issues}
+
+
+def _comparison_ledger(tmp_path: Path) -> GroundingLedger:
+    """A ledger holding quotes for two instruments, as a comparison run does."""
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="对比 562500.SH 与 AAPL.US 现价",
+    )
+    ledger.ingest_tool_result(
+        tool_name="get_market_data",
+        arguments={"codes": ["562500.SH"]},
+        result=_market_payload(),
+        call_id="cn-prices",
+        success=True,
+    )
+    ledger.ingest_tool_result(
+        tool_name="get_market_data",
+        arguments={"codes": ["AAPL.US"]},
+        result=_market_payload("AAPL.US"),
+        call_id="us-prices",
+        success=True,
+    )
+    return ledger
+
+
+def test_a_comparison_naming_its_subject_by_name_is_valid(tmp_path: Path) -> None:
+    """Prose that identifies its subject in words must not be refused."""
+    result = _comparison_ledger(tmp_path).validate_final_answer(
+        "## 562500.SH vs AAPL.US（来源 yahoo）\n"
+        "562500.SH 收盘价 1.171 元。\n"
+        "苹果的收盘价是 1.171 美元，两者收在同一水平。"
+    )
+
+    assert result.valid is True, result.issues
+
+
+def test_a_comparison_with_an_invented_quote_is_still_rejected(
+    tmp_path: Path,
+) -> None:
+    """Checking against the union of observed quotes is not checking nothing."""
+    result = _comparison_ledger(tmp_path).validate_final_answer(
+        "## 562500.SH vs AAPL.US（来源 yahoo）\n"
+        "562500.SH 收盘价 1.171 元。\n"
+        "苹果的收盘价是 999.99 美元。"
+    )
+
+    assert result.valid is False
+    assert {"numeric_claim_conflict", "numeric_claim_unavailable"} & {
+        issue["code"] for issue in result.issues
+    }
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        (
+            "什么是市盈率估值法？请解释一下原理",
+            "市盈率是市值与净利润的比值，用于横向比较同行业公司的相对贵贱。",
+        ),
+        (
+            "explain how to trade using RSI",
+            "RSI above 70 is conventionally read as overbought, below 30 as oversold.",
+        ),
+    ],
+)
+def test_a_conceptual_question_reaches_its_answer(
+    tmp_path: Path,
+    question: str,
+    answer: str,
+) -> None:
+    """A run that never named an instrument has no identity to get wrong.
+
+    The trigger phrase is matched against the user message, so these questions
+    demanded a locked identity that no correct answer could ever supply.
+    """
+    ledger = GroundingLedger(run_dir=tmp_path, user_message=question)
+
+    assert ledger.validate_final_answer(answer).valid is True
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "贵州茅台现价约 1300 元，建议买入。",
+        "600519.SH 收盘价 1300.00 元（source: tencent），建议买入。",
+    ],
+)
+def test_an_unevidenced_price_is_still_rejected_without_any_tool_call(
+    tmp_path: Path,
+    answer: str,
+) -> None:
+    """Relaxing the identity check must not license a remembered quote."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="茅台适合买入吗")
+
+    result = ledger.validate_final_answer(answer)
+
+    assert result.valid is False
+    assert {"numeric_claim_unavailable", "unsourced_symbol_figures"} & {
+        issue["code"] for issue in result.issues
+    }
+
+
+def test_a_shortlist_answers_the_user_but_still_cannot_fetch_a_quote(
+    tmp_path: Path,
+) -> None:
+    """#955 closed half of this: the skill loaded, the answer stayed blocked."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="推荐几只低估值的高股息A股")
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "高股息"},
+        result=_resolver_payload(
+            candidates=[
+                {"symbol": "601398.SH", "name": "工商银行", "source": "eastmoney"},
+                {"symbol": "600028.SH", "name": "中国石化", "source": "eastmoney"},
+            ],
+            query="高股息",
+        ),
+        call_id="screen",
+        success=True,
+    )
+
+    assert ledger.identity_status == "ambiguous"
+    assert ledger.validate_final_answer(
+        "候选清单命中多个标的，请确认你要看哪一只，我再去取行情。"
+    ).valid is True
+    assert ledger.authorize_tool_call(
+        "get_market_data",
+        {"codes": ["601398.SH"]},
+        batch_authorized_symbols=ledger.authorized_symbols,
+        batch_identity_status=ledger.identity_status,
+        call_id="prices",
+    ).allowed is False
+
+
+def _large_cap_ledger(tmp_path: Path) -> GroundingLedger:
+    """A ledger holding a quote large enough to be written with separators."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="600519.SH 收盘价多少")
+    ledger.ingest_tool_result(
+        tool_name="get_market_data",
+        arguments={"codes": ["600519.SH"]},
+        result=json.dumps(
+            {
+                "600519.SH": [
+                    {
+                        "trade_date": "2026-08-07",
+                        "open": 1308.66,
+                        "high": 1315.28,
+                        "low": 1301.00,
+                        "close": 1309.22,
+                        "volume": 24976.0,
+                    }
+                ],
+                "_provenance": {
+                    "600519.SH": {
+                        "source": "tencent",
+                        "requested_source": "auto",
+                        "currency_conversion": "none",
+                    }
+                },
+            }
+        ),
+        call_id="prices",
+        success=True,
+    )
+    return ledger
+
+
+def test_a_grouped_price_is_not_split_into_a_bogus_claim(tmp_path: Path) -> None:
+    """"¥1,309.22" must stay one number when the clause is split.
+
+    The comma is both a clause separator and a thousands separator, and the
+    split ran first, leaving a clause ending in "¥1". That 1 was compared
+    against the observed 1300.01–1363.35 range and rejected — which is every
+    price above 999 written the ordinary way.
+    """
+    result = _large_cap_ledger(tmp_path).validate_final_answer(
+        "贵州茅台 600519.SH 最近一个交易日的收盘价为 ¥1,309.22，数据来源：腾讯行情。"
+    )
+
+    assert result.valid is True, result.issues
+
+
+def test_a_grouped_price_that_contradicts_evidence_is_still_rejected(
+    tmp_path: Path,
+) -> None:
+    """Keeping the group together is not the same as skipping the check."""
+    result = _large_cap_ledger(tmp_path).validate_final_answer(
+        "贵州茅台 600519.SH 最近一个交易日的收盘价为 ¥1,888.88，数据来源：腾讯行情。"
+    )
+
+    assert result.valid is False
+    assert "numeric_claim_conflict" in {issue["code"] for issue in result.issues}
+
+
+def test_a_clause_comma_still_separates_clauses(tmp_path: Path) -> None:
+    """Only a real thousands group is protected, not every comma."""
+    result = _large_cap_ledger(tmp_path).validate_final_answer(
+        "600519.SH 数据来源：腾讯行情, 收盘价 ¥1,888.88 元。"
+    )
+
+    assert result.valid is False
+    assert "numeric_claim_conflict" in {issue["code"] for issue in result.issues}
+
+
+@pytest.mark.parametrize("query", ["贵州茅台", "ZZZZ.V"])
+def test_every_resolver_skip_marker_is_understood_as_a_non_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+) -> None:
+    """Lock the cross-module contract for "this source cannot serve this query".
+
+    The resolver skips Yahoo for a non-ASCII query and Eastmoney for a Canadian
+    one. This ledger recognizes a non-failure only by the status prefix, so a
+    second spelling on the tool side silently turns "not listed" into a blocking
+    ``invalidated`` identity — which is exactly what an "unsupported: ..." status
+    did before the two were unified.
+    """
+    from src.tools import symbol_search_tool as resolver
+
+    monkeypatch.setattr(resolver.eastmoney_client, "get_json", lambda *a, **k: {})
+    monkeypatch.setattr(resolver.yahoo_client, "search", lambda *a, **k: [])
+
+    result = resolver.SymbolSearchTool().execute(query=query)
+    statuses = json.loads(result)["data"]["sources"]
+    assert any(value.startswith("skipped:") for value in statuses.values()), statuses
+
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="这家公司现在股价多少")
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": query},
+        result=result,
+        call_id="resolve",
+        success=True,
+    )
+
+    assert ledger.identity_status == "not_found"
+    assert ledger.validate_final_answer("没有查到这家公司，无法给出结论。").valid is True
+
+
+@pytest.mark.parametrize(
+    ("symbol", "written"),
+    [("562500.SH", "¥1.171"), ("PDI.TO", "C$1.171")],
+)
+def test_a_currency_symbol_counts_as_naming_the_currency(
+    tmp_path: Path,
+    symbol: str,
+    written: str,
+) -> None:
+    """A model writes a quote as ¥ or C$, not as the ISO code."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message=f"{symbol} 现价多少")
+    ledger.ingest_tool_result(
+        tool_name="get_market_data",
+        arguments={"codes": [symbol]},
+        result=_market_payload(symbol),
+        call_id="prices",
+        success=True,
+    )
+
+    result = ledger.validate_final_answer(
+        f"{symbol} 最新收盘价 {written}，数据来源：雅虎财经。"
+    )
+
+    assert result.valid is True, result.issues
+
+
+def test_price_validation_ignores_markdown_ordered_list_markers(
+    tmp_path: Path,
+) -> None:
+    """Line-leading ordered-list numbers are prose, not prices (#BUGS-1).
+
+    A verdict written as a numbered Markdown list ("1. **原料药价格持续低迷**")
+    must not let the marker "1." be parsed as a float and rejected against the
+    observed OHLC range as a numeric_claim_conflict.
+    """
+    ledger = _screened_ledger(tmp_path)
+    symbol = "000543.SZ"  # populated by _screened_ledger
+
+    for draft in (
+        f"1. **原料药价格持续低迷**，{symbol} 现价 8.20 CNY（source: tencent）",
+        f"1. 原料药价格持续低迷\n2. 板块持续走强\n3. 建议关注 {symbol} 收盘价 8.20 CNY（source: tencent）",
+        f"  1. 第一项描述\n  2. 第二项描述，{symbol} 收盘价 8.20 CNY（source: tencent）",
+        f"结论如下：\n1) 原料药承压，{symbol} 8.20 CNY 可建仓（source: tencent）",
+    ):
+        result = ledger.validate_final_answer(draft)
+        assert result.valid is True, (draft, result.issues)
+
+
+def test_markdown_list_marker_mask_does_not_weaken_contradiction_check(
+    tmp_path: Path,
+) -> None:
+    """Masking list markers must not shield a genuinely out-of-range quote (#BUGS-1).
+
+    A wrong quote sitting in a numbered list item is still caught, so the mask is
+    span-local: it removes only the marker, not a contradicted price that follows.
+    """
+    ledger = _screened_ledger(tmp_path)
+    symbol = "000543.SZ"
+
+    result = ledger.validate_final_answer(
+        f"1. 原料药价格持续低迷，{symbol} 收盘价 42.00 CNY（source: tencent）"
+    )
+
+    codes = [issue["code"] for issue in result.issues]
+    assert "numeric_claim_conflict" in codes
+    assert [issue["value"] for issue in result.issues if issue["code"] == "numeric_claim_conflict"] == [42.0]
+
+
+@pytest.mark.parametrize(
+    "segment",
+    [
+        "买入股数 = 初始资金 × (1 - 单边成本率) / 期初收盘价",
+        "期末市值 = 买入股数 × 期末收盘价 × (1 - fee_rate)",
+        "net proceeds = shares * closing price * (1 - transaction_rate)",
+    ],
+)
+def test_rate_formula_identity_is_not_read_as_a_price(segment: str) -> None:
+    """The identity in ``1 - rate`` is arithmetic, not a one-unit quote."""
+    assert GroundingLedger._numbers_without_dates_or_percent(segment) == []
+
+
+def test_rate_formula_mask_does_not_hide_an_observed_one_unit_quote() -> None:
+    """A genuine price of 1 remains checked outside a rate expression."""
+    assert GroundingLedger._numbers_without_dates_or_percent("closing price = 1 CNY") == [1.0]
+
+
+def test_in_text_decimal_survives_list_marker_mask(
+    tmp_path: Path,
+) -> None:
+    """An ordinary decimal like 1.5 (digit after the dot) is never a list marker (#BUGS-1).
+
+    The mask only matches a digit run at line start followed by "." or ")" and
+    whitespace, so a genuine in-text decimal must remain a candidate price.
+    """
+    ledger = _screened_ledger(tmp_path)
+    symbol = "000543.SZ"
+
+    for draft in (
+        f"{symbol} 目标价 1.5 CNY，收盘价 8.20 CNY（source: tencent）",
+        f"{symbol} 变动 0.03 CNY，收盘价 8.20 CNY（source: tencent）",
+    ):
+        result = ledger.validate_final_answer(draft)
+        assert result.valid is True, (draft, result.issues)

@@ -27,6 +27,11 @@ class TestYfinanceCryptoRouting:
         engine = _create_market_engine("yfinance", {"initial_cash": 100_000}, ["AAPL.US"])
         assert isinstance(engine, GlobalEquityEngine)
 
+    def test_canadian_equity_routes_to_canadian_global_rules(self) -> None:
+        engine = _create_market_engine("yfinance", {"initial_cash": 100_000}, ["TD.TO"])
+        assert isinstance(engine, GlobalEquityEngine)
+        assert engine.market == "ca"
+
     def test_fee_keys_reach_the_engine(self) -> None:
         engine = _create_market_engine(
             "yfinance",

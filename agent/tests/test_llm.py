@@ -224,6 +224,15 @@ class TestSyncProviderEnv:
         assert result["OPENAI_API_KEY"] == "sf-key-123"
         assert result["OPENAI_API_BASE"] == base_url
 
+    def test_modelscope_provider(self) -> None:
+        result = self._run_sync({
+            "LANGCHAIN_PROVIDER": "modelscope",
+            "MODELSCOPE_API_KEY": "ms-key-123",
+            "MODELSCOPE_BASE_URL": "https://api-inference.modelscope.cn/v1",
+        })
+        assert result["OPENAI_API_KEY"] == "ms-key-123"
+        assert result["OPENAI_API_BASE"] == "https://api-inference.modelscope.cn/v1"
+
     def test_groq_provider(self) -> None:
         result = self._run_sync(
             {
@@ -788,6 +797,50 @@ class TestGetLlmCredentials:
         with patch.dict(os.environ, {}, clear=True):
             creds = get_llm_credentials("ollama", "llama3")
             assert creds["api_key"] == "ollama"
+
+    @pytest.mark.parametrize(
+        "configured_url",
+        [
+            "http://localhost:11434",
+            "http://localhost:11434/",
+            "http://localhost:11434/v1",
+            "http://localhost:11434/v1/",
+        ],
+    )
+    def test_ollama_base_url_is_normalized_at_credentials_boundary(
+        self,
+        configured_url: str,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {"OLLAMA_BASE_URL": configured_url},
+            clear=True,
+        ):
+            creds = get_llm_credentials("ollama", "llama3")
+
+        assert creds["base_url"] == "http://localhost:11434/v1"
+
+    def test_build_llm_receives_normalized_ollama_base_url(self) -> None:
+        """The runtime constructor must not reintroduce Ollama's raw root (#1069)."""
+        import src.providers.llm as llm_mod
+
+        llm_mod._dotenv_loaded = True
+        captured: dict[str, object] = {}
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        env = {
+            "LANGCHAIN_PROVIDER": "ollama",
+            "LANGCHAIN_MODEL_NAME": "qwen2.5:3b",
+            "OLLAMA_BASE_URL": "http://localhost:11434",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+                build_llm()
+
+        assert captured["base_url"] == "http://localhost:11434/v1"
 
     def test_base_url_uses_provider_specific_env(self) -> None:
         with patch.dict(

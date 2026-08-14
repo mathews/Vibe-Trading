@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from src.trading.connectors.etoro.client import (
@@ -12,12 +13,15 @@ from src.trading.connectors.etoro.client import (
     PAPER_GUARD,
     aggregate_portfolio_path,
     build_config,
+    credential_source,
     info_root,
     load_config,
     make_client,
     public_config,
     save_config,
     trade_history_root,
+    _missing_credential_code,
+    _missing_fields,
 )
 from src.trading.connectors.etoro.copy_trading import (
     copy_close,
@@ -79,32 +83,38 @@ def _base_payload(cfg: EtoroConfig) -> dict[str, Any]:
 
 
 def check_status(config: EtoroConfig | None = None) -> dict[str, Any]:
-    from src.trading.connectors.etoro.client import _missing_fields
-
+    """Check read-only readiness with stable, redaction-safe diagnostics."""
     cfg = config or load_config()
+    configured = not _missing_fields(cfg)
     report: dict[str, Any] = {
         "status": "ok",
+        "configured": configured,
+        "credential_source": credential_source(),
+        "connection_state": "connected",
+        "error_code": None,
+        "error": None,
         "config": public_config(cfg),
         "sdk": {"package": "requests", "installed": True},
         "paper_guard": PAPER_GUARD,
         "base_url": BASE_URL,
     }
-    missing_fields = _missing_fields(cfg)
-    if missing_fields:
-        report["status"] = "error"
-        report["error"] = f"eToro connector not configured: missing {', '.join(missing_fields)}."
-        return report
+    if not configured:
+        code = _missing_credential_code(cfg)
+        fields = ", ".join(_missing_fields(cfg))
+        message = (
+            f"eToro credentials are partial; missing fields: {fields}."
+            if code == "credentials_partial"
+            else f"eToro connector not configured: missing {fields}."
+        )
+        return _status_error(report, code, message)
     try:
         me = get_user_profile(cfg)
         portfolio = get_account_snapshot(cfg)
     except (EtoroConfigError, EtoroAPIError) as exc:
-        report["status"] = "error"
-        report["error"] = str(exc)
-        return report
+        code = _connection_error_code(exc)
+        return _status_error(report, code, _connection_error_message(code, str(exc)))
     except Exception as exc:  # noqa: BLE001
-        report["status"] = "error"
-        report["error"] = f"eToro connector check failed: {exc}"
-        return report
+        return _status_error(report, "broker_error", f"eToro connector check failed: {exc}")
     report["account"] = {
         "profile": cfg.profile,
         "portfolio_status": portfolio.get("status"),
@@ -112,7 +122,46 @@ def check_status(config: EtoroConfig | None = None) -> dict[str, Any]:
         "real_cid": me.get("realCid") or me.get("realCID"),
         "demo_cid": me.get("demoCid") or me.get("demoCID"),
     }
+    account = portfolio.get("account") if isinstance(portfolio.get("account"), dict) else {}
+    pnl = account.get("pnl") if isinstance(account.get("pnl"), dict) else {}
+    if pnl.get("account_current_pnl") is not None:
+        report["account"]["account_current_pnl"] = pnl.get("account_current_pnl")
+    report["last_checked_at"] = datetime.now(timezone.utc).isoformat()
     return report
+
+
+def _status_error(report: dict[str, Any], code: str, message: str) -> dict[str, Any]:
+    if code in ("credentials_missing", "credentials_partial"):
+        report["configured"] = False
+    report.update(
+        status="error",
+        connection_state=(
+            "not_configured" if code in ("credentials_missing", "credentials_partial") else "error"
+        ),
+        error_code=code,
+        error=message,
+    )
+    return report
+
+
+def _connection_error_code(exc: Exception) -> str:
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return "network_unreachable"
+    if isinstance(exc, EtoroAPIError):
+        text = str(exc).lower()
+        if any(token in text for token in ("401", "403", "auth", "unauthorized", "forbidden")):
+            return "authentication_failed"
+        if "network error" in text:
+            return "network_unreachable"
+    return "broker_error"
+
+
+def _connection_error_message(code: str, detail: str) -> str:
+    if code == "authentication_failed":
+        return "eToro authentication failed."
+    if code == "network_unreachable":
+        return "eToro Public API is unreachable."
+    return detail or "eToro broker request failed."
 
 
 def get_user_profile(config: EtoroConfig | None = None) -> dict[str, Any]:

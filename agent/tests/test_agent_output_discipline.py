@@ -408,10 +408,10 @@ class TestTheGateDoesNotKillCorrectAnswers:
 
         result = ledger.validate_final_answer(f"{_GROUNDED_ANSWER}\n候选 600519.SH 权重 30.0。")
 
-        # A two-candidate shortlist is still ``ambiguous`` identity, which the
-        # pre-existing identity gate reports on its own; this gate must add
-        # nothing on top of it.
-        assert [issue["code"] for issue in result.issues] == ["identity_not_locked"]
+        # A shortlist is an answer, not a gap, so it no longer blocks the final
+        # answer either — consumers stay blocked on ``ambiguous`` instead. This
+        # gate must add nothing of its own on top of that.
+        assert [issue["code"] for issue in result.issues] == []
 
     def test_prose_with_no_symbols_and_no_evidence_is_untouched(self, tmp_path: Path) -> None:
         ledger = GroundingLedger(run_dir=tmp_path, user_message="什么是夏普比率？")

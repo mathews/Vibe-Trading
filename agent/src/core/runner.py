@@ -334,6 +334,13 @@ _ARTIFACTS_SPEC = {
         "metrics": {"schema": "metrics_csv", "path": "artifacts/metrics.csv"},
         "trades": {"schema": "trade_log", "path": "artifacts/trades.csv"},
         "positions": {"schema": "positions_csv", "path": "artifacts/positions.csv"},
+        # Optimiser requests, kept separate from the executed book above. Without
+        # this entry the file is written but never appears in the runner's
+        # artifact map, so nothing downstream can compare intent against fills.
+        "target_positions": {
+            "schema": "positions_csv",
+            "path": "artifacts/target_positions.csv",
+        },
         "run_card_json": {"schema": "json", "path": "run_card.json"},
         "run_card_md": {"schema": "markdown", "path": "run_card.md"},
     },

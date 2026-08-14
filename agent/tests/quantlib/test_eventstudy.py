@@ -245,6 +245,76 @@ def test_non_finite_event_window_is_dropped():
     assert [o.symbol for o in result.events] == ["S01"]
 
 
+# --- event-date anchoring ---
+
+
+def test_non_trading_event_date_anchors_to_previous_session():
+    returns, market = _panel(seed=509)
+    friday_pos = next(
+        pos for pos in range(200, len(returns) - 1) if returns.index[pos].weekday() == 4
+    )
+    friday = returns.index[friday_pos]
+    saturday = friday + pd.Timedelta(days=1)
+    assert saturday not in returns.index
+
+    returns = returns.copy()
+    returns.iloc[friday_pos, returns.columns.get_loc("S00")] += 0.10
+    returns.iloc[friday_pos + 1, returns.columns.get_loc("S00")] -= 0.20
+
+    result = event_study(
+        returns,
+        market,
+        [("S00", saturday)],
+        event_window=(0, 0),
+        model="mean_adjusted",
+    )
+
+    outcome = result.events[0]
+    expected = returns.loc[friday, "S00"] - outcome.fit.alpha
+    assert outcome.event_date == friday
+    assert outcome.abnormal_returns.loc[0] == pytest.approx(expected)
+
+
+def test_exact_event_date_remains_on_that_session():
+    returns, market = _panel(seed=510)
+    event_date = returns.index[250]
+
+    result = event_study(
+        returns,
+        market,
+        [("S00", event_date)],
+        event_window=(0, 0),
+    )
+
+    assert result.events[0].event_date == event_date
+
+
+def test_event_before_first_session_is_dropped():
+    returns, market = _panel(seed=511)
+    events = [
+        ("S00", returns.index[250]),
+        ("S01", returns.index[0] - pd.Timedelta(days=1)),
+    ]
+
+    result = event_study(returns, market, events)
+
+    assert [outcome.symbol for outcome in result.events] == ["S00"]
+    assert result.dropped[0][2] == "event date is before the frame starts"
+
+
+def test_event_after_last_session_is_dropped():
+    returns, market = _panel(seed=512)
+    events = [
+        ("S00", returns.index[250]),
+        ("S01", returns.index[-1] + pd.Timedelta(days=1)),
+    ]
+
+    result = event_study(returns, market, events)
+
+    assert [outcome.symbol for outcome in result.events] == ["S00"]
+    assert result.dropped[0][2] == "event date is after the frame ends"
+
+
 # --- clustering disclosure ---
 
 

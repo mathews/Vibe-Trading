@@ -30,10 +30,9 @@ MIRRORED_TOOL_NAMES = (
     "research_papers",
 )
 
-# Tools that mutate state (is_readonly is not True on the agent side) and were
-# ALREADY exposed on the MCP surface before the institutional-research tools
-# were added. They are sandbox/session writes — a backtest run, a session file
-# write, a swarm launch, research-goal bookkeeping, and selecting which broker
+# Tools that mutate state (is_readonly is not True on the agent side) but are
+# sanctioned sandbox/session writes: Alpha Bench reports, backtest runs, session
+# files, swarm launches, research-goal bookkeeping, and selecting which broker
 # profile subsequent READS use — not broker order flow.
 #
 # This snapshot is the regression gate: adding an MCP tool that mutates
@@ -41,6 +40,7 @@ MIRRORED_TOOL_NAMES = (
 KNOWN_MUTATING_MCP_TOOLS = frozenset(
     {
         "add_goal_evidence",
+        "alpha_bench",
         "backtest",
         "run_swarm",
         "start_research_goal",
@@ -306,12 +306,17 @@ def test_mirrored_tool_round_trips_over_a_real_mcp_session(monkeypatch) -> None:
 
 
 def test_one_broken_tool_module_costs_only_its_own_tool(monkeypatch, caplog) -> None:
-    """A broken tool module must not take the other three down with it.
+    """A broken tool module must not take the other mirrored tools down with it.
 
-    Regression: importing all four classes in one ``from ... import`` block
-    made a single SyntaxError / missing optional dependency raise out of
-    ``_mirrored_tool_classes()``, so the MCP surface silently lost all four
-    institutional-research tools instead of one.
+    Regression: importing every class in one ``from ... import`` block made a
+    single SyntaxError / missing optional dependency raise out of
+    ``_mirrored_tool_classes()``, so the MCP surface silently lost all of the
+    mirrored tools instead of one.
+
+    The expected survivor set is derived from ``_MIRRORED_TOOL_SOURCES`` rather
+    than written out: this asserts the isolation property, and pinning the
+    membership here would just fail every time a tool joins the surface,
+    training the next reader to edit the number instead of the behaviour.
     """
     mod = _import_mcp_server()
 
@@ -325,11 +330,16 @@ def test_one_broken_tool_module_costs_only_its_own_tool(monkeypatch, caplog) -> 
     with caplog.at_level("ERROR"):
         surviving = {cls.name for cls in mod._mirrored_tool_classes()}
 
-    assert surviving == {
-        "get_institutional_holdings",
-        "etf_holdings",
-        "prediction_market",
-    }, f"one broken module took down more than its own tool: survivors={sorted(surviving)}"
+    expected = {
+        getattr(importlib.import_module(path), cls).name
+        for path, cls in mod._MIRRORED_TOOL_SOURCES
+        if not path.endswith("research_papers_tool")
+    }
+    assert expected, "no mirrored tools to isolate — the source list is empty"
+    assert surviving == expected, (
+        f"one broken module took down more than its own tool: "
+        f"survivors={sorted(surviving)}, expected={sorted(expected)}"
+    )
     assert any("research_papers_tool" in record.message for record in caplog.records)
 
 

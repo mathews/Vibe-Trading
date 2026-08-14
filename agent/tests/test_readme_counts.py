@@ -53,13 +53,20 @@ READMES = (
 # Feature badges in the order they appear in every README. Each entry is the
 # badge's position among numeric <sub> badges and a callable returning the
 # count the code actually ships.
-BADGE_ORDER = ("skills", "brokers", "presets", "alphas", "engines")
+BADGE_ORDER = ("skills", "brokers", "presets", "alphas", "engines", "quantlib")
 
 # Brokers are a curated product claim (which venues we support), not something
 # countable from a single directory — connectors, profiles and the read-only
 # caps do not map one-to-one. It is pinned here so a reader-facing number still
 # has one owner, and updating it is a deliberate edit.
-EXPECTED_BROKERS = 12
+#
+# The pin is guarded against silent drift by
+# `test_the_pinned_broker_count_matches_the_shipped_connectors`: this constant
+# must equal the number of distinct connectors the profile registry exposes.
+# Without that guard the count tests only prove the five READMEs agree with
+# each other, which they did while all five were uniformly wrong — eToro
+# shipped as the 13th connector and the pin stayed at 12.
+EXPECTED_BROKERS = 13
 
 
 def _read(name: str) -> str:
@@ -118,6 +125,32 @@ def _engine_count() -> int:
     )
 
 
+def _quantlib_export_count() -> int:
+    """Count the public functions `src/quantlib` exports.
+
+    The Quant Library badge states this number, and the whole point of the
+    layer is that a formula has exactly one implementation — so the badge is
+    derived from `__all__` rather than pinned, and a module landing without
+    `__all__` simply does not count toward the reader-facing claim.
+
+    Returns:
+        Total names exported across every `quantlib` submodule.
+    """
+    import importlib
+    import pkgutil
+
+    if str(AGENT_DIR) not in sys.path:
+        sys.path.insert(0, str(AGENT_DIR))
+    quantlib = importlib.import_module("src.quantlib")
+
+    total = 0
+    for module in pkgutil.walk_packages(quantlib.__path__, "src.quantlib."):
+        exported = getattr(importlib.import_module(module.name), "__all__", None)
+        if exported:
+            total += len(exported)
+    return total
+
+
 def _counts() -> dict[str, int]:
     """Return every code-derived count the READMEs state.
 
@@ -131,6 +164,7 @@ def _counts() -> dict[str, int]:
         "alphas": len([p for p in (AGENT_DIR / "src" / "factors" / "zoo").rglob("*.py")
                        if p.stem != "__init__"]),
         "engines": _engine_count(),
+        "quantlib": _quantlib_export_count(),
     }
 
 
@@ -329,6 +363,61 @@ def test_brokers_without_paper_trading_are_named_as_exceptions(name: str) -> Non
         f"{name}: connectors with no paper account are unnamed in the broker "
         f"paragraph: {missing}"
     )
+
+
+def test_the_pinned_broker_count_matches_the_shipped_connectors() -> None:
+    """`EXPECTED_BROKERS` must equal the connectors the profile registry ships.
+
+    Every other broker-count assertion compares a README against this pin, so
+    the pin going stale makes all five READMEs agree on a wrong number and the
+    suite still passes. That is exactly what happened: eToro landed as the 13th
+    connector while the pin stayed at 12. Anchoring the pin to the registry
+    turns the next such omission into a failing test at the moment the
+    connector lands, instead of a number a reader has to disprove.
+    """
+    if str(AGENT_DIR) not in sys.path:
+        sys.path.insert(0, str(AGENT_DIR))
+    from src.trading.service import list_profiles
+
+    shipped = sorted({profile.connector for profile in list_profiles()})
+    assert EXPECTED_BROKERS == len(shipped), (
+        f"EXPECTED_BROKERS is {EXPECTED_BROKERS} but the profile registry ships "
+        f"{len(shipped)} connectors: {shipped}. Update the pin and the broker "
+        f"badge + table in all five READMEs together."
+    )
+
+
+@pytest.mark.parametrize("name", READMES)
+def test_every_shipped_connector_appears_in_the_broker_table(name: str) -> None:
+    """The broker table must name every connector, not just the count.
+
+    A correct badge over an incomplete table is the same defect one layer
+    down: eToro shipped, got its own README section, and was still absent from
+    the table a reader scans to decide whether their broker is supported.
+    """
+    if str(AGENT_DIR) not in sys.path:
+        sys.path.insert(0, str(AGENT_DIR))
+    from src.trading.service import list_profiles
+
+    # Brokers are written under their product name, which is not always the
+    # connector id. Broker names stay in Latin script in all five locales, so
+    # one alias map covers every README.
+    display_names = {"mt5": "metatrader5"}
+
+    text = _read(name)
+    lines = text.splitlines()
+    badges = [i for i, line in enumerate(lines) if SUMMARY_BADGE.search(line)]
+    # BADGE_ORDER[1] is the broker badge; the table runs to the closing </details>.
+    start = badges[1]
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "</details>")
+    table = "".join(lines[start:end]).replace(" ", "").lower()
+
+    missing = [
+        connector
+        for connector in sorted({p.connector for p in list_profiles()})
+        if display_names.get(connector, connector.replace("_", "")) not in table
+    ]
+    assert not missing, f"{name}: connectors absent from the broker table: {missing}"
 
 
 def test_the_skill_category_table_matches_the_frontmatter() -> None:

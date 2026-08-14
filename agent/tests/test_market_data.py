@@ -44,6 +44,9 @@ from src.market_data import (
         ("M&M.NS", "yahoo"),  # ampersand in ticker
         ("BAJAJ-AUTO.NS", "yahoo"),  # hyphen in ticker
         ("500325.BO", "yahoo"),  # India BSE (numeric scrip code)
+        ("TD.TO", "yahoo"),  # Canada TSX
+        ("BBD-B.TO", "yahoo"),  # hyphenated TSX class symbol
+        ("PNG.V", "yahoo"),  # Canada TSX Venture
         ("BTC-USDT", "okx"),
         ("ETH/USDT", "ccxt"),
         ("EUR/USD", "mt5"),  # forex pair → mt5 chain head (registry fallback)
@@ -71,6 +74,8 @@ def test_yahoo_loader_accepts_futures_and_forex_suffixes() -> None:
     assert _is_supported("GC=F") is True
     assert _is_supported("EURUSD=X") is True
     assert _is_supported("AAPL.US") is True  # unchanged
+    assert _is_supported("TD.TO") is True
+    assert _is_supported("PNG.V") is True
     assert _is_supported("600519.SH") is False  # A-share still not yahoo
 
 
@@ -94,7 +99,7 @@ def test_fetch_market_data_auto_routes_yahoo_suffix_symbols() -> None:
         return _StubLoader
 
     out = fetch_market_data(
-        codes=["GC=F", "EURUSD=X"],
+        codes=["GC=F", "EURUSD=X", "TD.TO", "PNG.V"],
         start_date="2024-01-01",
         end_date="2024-01-03",
         source="auto",
@@ -102,7 +107,7 @@ def test_fetch_market_data_auto_routes_yahoo_suffix_symbols() -> None:
     )
 
     assert "_unresolved" not in out
-    assert "GC=F" in out and "EURUSD=X" in out
+    assert all(code in out for code in ("GC=F", "EURUSD=X", "TD.TO", "PNG.V"))
     # First source tried must be yahoo (not tushare/akshare from the China chain).
     assert seen_sources and seen_sources[0] == "yahoo"
 

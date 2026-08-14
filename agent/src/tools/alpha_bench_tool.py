@@ -723,6 +723,28 @@ _JINJA_TEMPLATE = """<!doctype html>
 {% endfor %}
 </table>
 
+{% if strict %}
+<h2>Strict gate</h2>
+<div class="meta">
+  Alpha t-stats against the same-universe random control. The strict gate
+  decides on these, not on IC.
+</div>
+<table>
+<tr><th>Alpha ID</th><th>alpha_t full</th><th>alpha_t train</th>
+    <th>alpha_t test</th><th>random IC mean</th><th>Category</th></tr>
+{% for row in top %}
+<tr>
+  <td>{{ row.id }}</td>
+  <td>{{ "%.4f"|format(row.get('alpha_t_full')) if row.get('alpha_t_full') is not none else "n/a" }}</td>
+  <td>{{ "%.4f"|format(row.get('alpha_t_train')) if row.get('alpha_t_train') is not none else "n/a" }}</td>
+  <td>{{ "%.4f"|format(row.get('alpha_t_test')) if row.get('alpha_t_test') is not none else "n/a" }}</td>
+  <td>{{ "%.6f"|format(row.get('random_ic_mean')) if row.get('random_ic_mean') is not none else "n/a" }}</td>
+  <td>{{ row.category }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+
 <h2>Formulas</h2>
 <table>
 <tr><th>Alpha ID</th><th>Formula (LaTeX source)</th></tr>
@@ -794,7 +816,30 @@ def _render_html_manual(ctx: dict[str, Any]) -> str:
             f"<td>{ic_pos}</td>"
             f"<td>{_esc(row['ic_count'])}</td></tr>"
         )
-    parts.append("</table><h2>Formulas</h2><table>")
+    parts.append("</table>")
+    if ctx.get("strict"):
+        parts.append(
+            "<h2>Strict gate</h2>"
+            "<div class=\"meta\">Alpha t-stats against the same-universe random "
+            "control. The strict gate decides on these, not on IC.</div><table>"
+            "<tr><th>Alpha ID</th><th>alpha_t full</th><th>alpha_t train</th>"
+            "<th>alpha_t test</th><th>random IC mean</th><th>Category</th></tr>"
+        )
+
+        def _fmt(value: Any, places: int = 4) -> str:
+            return "n/a" if value is None else _esc(f"{value:.{places}f}")
+
+        for row in ctx["top"]:
+            parts.append(
+                f"<tr><td>{_esc(row['id'])}</td>"
+                f"<td>{_fmt(row.get('alpha_t_full'))}</td>"
+                f"<td>{_fmt(row.get('alpha_t_train'))}</td>"
+                f"<td>{_fmt(row.get('alpha_t_test'))}</td>"
+                f"<td>{_fmt(row.get('random_ic_mean'), 6)}</td>"
+                f"<td>{_esc(row.get('category'))}</td></tr>"
+            )
+        parts.append("</table>")
+    parts.append("<h2>Formulas</h2><table>")
     parts.append("<tr><th>Alpha ID</th><th>Formula (LaTeX source)</th></tr>")
     for row in ctx["top"]:
         parts.append(
@@ -909,7 +954,7 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    report_path = output_dir / f"alpha_bench_{ts}.html"
+    report_path = output_dir / f"alpha_bench_{ts}_{secrets.token_hex(16)}.html"
 
     context = {
         "csp": _CSP,
@@ -924,7 +969,11 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
     }
 
     try:
-        report_path.write_text(_render_html(context), encoding="utf-8")
+        report_html = _render_html(context)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        report_fd = os.open(report_path, flags, 0o666)
+        with os.fdopen(report_fd, "w", encoding="utf-8") as report_file:
+            report_file.write(report_html)
     except OSError as exc:
         return {"status": "error", "error": f"failed to write report: {exc}"}
 

@@ -66,6 +66,89 @@ class TestRSI:
         close = pd.Series([100.0, 101.0], dtype=float)
         assert _compute_rsi(close, 14) is None
 
+    def test_rsi_uses_wilder_ewm_not_rolling_mean(self):
+        """Regression (sibling divergence): the docstring promises Wilder
+        smoothing, which is Wilder's exponential method, not a plain rolling
+        mean of gains/losses -- a materially different, well-known-distinct
+        technique. Classic 15-bar Wilder worked example: seeded avg_gain/
+        avg_loss over the first 14 deltas gives RSI approx 71.80. A rolling-mean
+        implementation gives approx 70.46 for the same input -- close enough to
+        look plausible, far enough to be wrong.
+        """
+        close = pd.Series(
+            [
+                44.34,
+                44.09,
+                44.15,
+                43.61,
+                44.33,
+                44.83,
+                45.10,
+                45.42,
+                45.84,
+                46.08,
+                45.89,
+                46.03,
+                45.61,
+                46.28,
+                46.28,
+            ]
+        )
+        rsi = _compute_rsi(close, period=14)
+        assert rsi == pytest.approx(71.8024, abs=0.01)
+        assert rsi != pytest.approx(70.4641, abs=0.01)
+
+    def test_rsi_matches_sibling_wilder_implementations(self):
+        """Regression: must agree with the Wilder-EWM RSI already used
+        elsewhere in this codebase (shadow_account/extractor.py,
+        shadow_account/scanner.py, skills/technical-basic/
+        example_signal_engine.py -- all three implement the identical
+        formula below), on a series that crosses both the 30 and 70
+        thresholds a rolling-mean implementation would place differently.
+        """
+        close = pd.Series(
+            [
+                float(x)
+                for x in [
+                    100,
+                    101,
+                    102.5,
+                    104,
+                    103.5,
+                    105,
+                    106.5,
+                    108,
+                    107.5,
+                    109,
+                    110.5,
+                    109.5,
+                    108,
+                    106,
+                    103.5,
+                    101,
+                    98,
+                    95.5,
+                    93,
+                    90.5,
+                    88,
+                ]
+            ]
+        )
+        period = 14
+
+        def sibling_rsi(close: pd.Series, period: int) -> float:
+            delta = close.diff()
+            gain = delta.clip(lower=0)
+            loss = (-delta).clip(lower=0)
+            avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
+            avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
+            rs = avg_gain / avg_loss
+            return float((100 - 100 / (1 + rs)).iloc[-1])
+
+        rsi = _compute_rsi(close, period=period)
+        assert rsi == pytest.approx(sibling_rsi(close, period), abs=1e-9)
+        assert rsi == pytest.approx(18.8237, abs=0.01)
+
 
 class TestMACD:
     def test_macd_normal(self):

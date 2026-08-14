@@ -15,6 +15,13 @@ vi.mock("@/components/charts/CandlestickChart", () => ({
 vi.mock("@/components/charts/EquityChart", () => ({
   EquityChart: () => <div data-testid="equity-chart" />,
 }));
+vi.mock("@/components/charts/StrategyResearchDashboard", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/charts/StrategyResearchDashboard")>();
+  return {
+    ...actual,
+    StrategyResearchDashboard: ({ run }: { run: RunData }) => <div data-testid="strategy-dashboard">{run.run_id}</div>,
+  };
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -37,6 +44,65 @@ describe("RunDetail page", () => {
   beforeEach(() => {
     apiMock.getRun.mockReset();
     apiMock.getRunCode.mockReset();
+  });
+
+  it("presents a readable strategy title instead of promoting the run id", async () => {
+    apiMock.getRun.mockResolvedValue({
+      status: "success",
+      run_id: "20260811_110751_32_d951c8",
+      prompt: "回测 000001.SZ 在 2024 年的 20/50 日均线交叉策略。",
+      chart_symbols: ["000001.SZ"],
+      run_card: {
+        backtest: { codes: ["000001.SZ"], start_date: "2024-01-01", end_date: "2024-12-31", engine: "daily" },
+        data_sources: ["tencent"],
+      },
+    });
+    apiMock.getRunCode.mockResolvedValueOnce({});
+
+    renderRunDetail("/runs/20260811_110751_32_d951c8?view=dashboard");
+
+    // The strategy name is report chrome derived from the prompt, so it follows
+    // the UI language, not the prompt's. A Chinese prompt under an English UI
+    // must not leak a Chinese title into an otherwise English report.
+    expect(
+      await screen.findByRole("heading", { name: "000001.SZ · 20/50-day moving-average crossover" })
+    ).toBeInTheDocument();
+    expect(screen.getByText("RUN 20260811_110751_32_d951c8")).toHaveClass("text-[10px]");
+  });
+
+  it("renders the derived strategy name in the active UI language", async () => {
+    const i18n = (await import("@/i18n")).default;
+    apiMock.getRun.mockResolvedValue({
+      status: "success",
+      run_id: "zh-run",
+      prompt: "回测 000001.SZ 在 2024 年的 20/50 日均线交叉策略。",
+      chart_symbols: ["000001.SZ"],
+    });
+    apiMock.getRunCode.mockResolvedValueOnce({});
+    const previous = i18n.language;
+    await act(async () => {
+      await i18n.changeLanguage("zh-CN");
+    });
+    try {
+      renderRunDetail("/runs/zh-run?view=dashboard");
+      expect(
+        await screen.findByRole("heading", { name: "000001.SZ · 20/50 日均线交叉策略" })
+      ).toBeInTheDocument();
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage(previous);
+      });
+    }
+  });
+
+  it("opens the research dashboard when requested by the terminal report URL", async () => {
+    apiMock.getRun.mockResolvedValue({ status: "success", run_id: "terminal-run", prompt: "MA strategy" });
+    apiMock.getRunCode.mockResolvedValue({});
+
+    renderRunDetail("/runs/terminal-run?view=dashboard");
+
+    expect(await screen.findByTestId("strategy-dashboard")).toHaveTextContent("terminal-run");
+    expect(screen.getByRole("tab", { name: /dashboard/i })).toHaveAttribute("aria-selected", "true");
   });
 
   it("does not let an older route load replace the current run or code", async () => {
@@ -127,7 +193,8 @@ describe("RunDetail page", () => {
 
     await screen.findByText("Accessible run");
     expect(screen.getByText("Completed")).toHaveClass("sr-only");
-    expect(screen.getByRole("heading", { level: 1, name: "accessible" })).toHaveClass("text-2xl", "font-semibold");
+    expect(screen.getByRole("heading", { level: 1, name: "Portfolio · Accessible run" })).toHaveClass("text-xl", "font-semibold");
+    expect(screen.getByText("RUN accessible")).toHaveClass("font-mono", "text-[10px]");
     expect(screen.getByRole("tablist")).toBeInTheDocument();
 
     const chartTab = screen.getByRole("tab", { name: "Chart" });

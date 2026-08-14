@@ -74,6 +74,28 @@ def test_every_allowlisted_module_actually_imports(tool):
         assert result["ok"] is True, f"{short} failed to list: {result}"
 
 
+def test_every_allowlisted_module_exposes_at_least_one_function(tool):
+    """An allowlisted module that lists nothing is unreachable, not merely empty.
+
+    Importing cleanly is not the same as being callable: dispatch is
+    ``__all__``-only, so a module without ``__all__`` lists zero functions while
+    still passing the import check above. `attribution` and `impact` shipped
+    that way — allowlisted, documented in the package docstring, and reachable
+    from nowhere. Asserting `ok is True` could never catch it; asserting the
+    listing is non-empty does.
+    """
+    empty = [
+        short
+        for short in ALLOWED_MODULES
+        if not call(tool, action="list", module=short)["functions"]
+    ]
+    assert not empty, (
+        f"allowlisted but exposing no callables: {empty}. Add `__all__` to the "
+        f"module, or drop it from ALLOWED_MODULES — advertising a module the "
+        f"tool cannot dispatch to is worse than not listing it."
+    )
+
+
 # --- discovery ---
 
 

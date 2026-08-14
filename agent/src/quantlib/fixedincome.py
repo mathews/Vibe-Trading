@@ -712,7 +712,7 @@ def fit_yield_curve(
 
     The betas are solved exactly by least squares at every candidate decay
     parameter, and only the one or two decay parameters are searched -- first on
-    a log-spaced grid, then refined with Nelder-Mead. This matters: a
+    a log-spaced grid, then refined with bounded Nelder-Mead. This matters: a
     single-start L-BFGS-B over all parameters at once, which is what the skill's
     old markdown template did, cannot recover a curve it generated itself. On a
     10-tenor noise-free Nelson-Siegel curve it stops at an RMSE of 6.4e-4
@@ -775,6 +775,7 @@ def fit_yield_curve(
         lambda p: _profiled_ssr(np.exp(p), tau, obs)[0],
         np.log(best_lambdas),
         method="Nelder-Mead",
+        bounds=[(math.log(low), math.log(high))] * n_decay,
         options={"xatol": 1e-10, "fatol": 1e-18, "maxiter": 4000},
     )
     refined_lambdas = tuple(float(v) for v in np.exp(refined.x))

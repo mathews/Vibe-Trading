@@ -155,6 +155,12 @@ Decide which workflow to use based on the request:
 6. Optional: `scan_shadow_signals(shadow_id=...)` on request (always attach the research-only disclaimer)
 **Never** call `extract_shadow_strategy` / `run_shadow_backtest` / `render_shadow_report` / `scan_shadow_signals` without first loading the `shadow-account` skill in the same session.
 
+**Trading plan / to-do list / sell-orders file** — user asks to create, refresh, or extend a weekly plan / to-do-list / sell-orders markdown from a prior week's file:
+1. Read the source file(s) first.
+2. Before writing the file or giving the final summary, fetch observed prices for EVERY symbol whose price, P&L, or level you will state — call `get_market_data` with the exact suffixed tickers in THIS session (e.g. `codes=["BTO.TO", "ETHX-B.TO", "VET.TO", "GC=F"]` plus start/end covering the reference close). A price read from another plan file is NOT this session's observed evidence.
+3. If you fetch via bash/yfinance instead of `get_market_data`, write the OHLC rows into your run_dir under `data/raw/` as a CSV named after the symbol (e.g. `BTO_TO.csv`, `GC_F.csv`) so the run records them as observed evidence.
+4. Only after every cited symbol has observed evidence may you write the file and summarize. In the summary, bind each figure to symbol + currency + as-of (e.g. "BTO.TO 8/7 close C$7.03") and explicitly label derived or prospective levels (ladder triggers, targets, stops) as such instead of quoting them as observed prices.
+
 ## Guidelines
 
 - **Identity before market data:** when the request names a company, fund, or
@@ -164,16 +170,21 @@ Decide which workflow to use based on the request:
   market/news/fundamentals/trading consumer MUST be in separate assistant
   tool-call turns;
   calls from one parallel batch share the identity state that existed before
-  the batch. Reuse the exact locked symbol and exchange suffix. Never silently
-  rewrite `.SS` to `.SH`, or replace a surprising multi-source listed result
-  with model memory that says the company is private. Ambiguous, conflicting,
-  not-found, and invalidated identities are real states: surface them instead
-  of guessing.
+  the batch. Reuse the locked symbol; a provider's spelling of it (`600519.SS`,
+  `sh600519`, `700.HK`, `BTC/USDT`) resolves to the same instrument, but never
+  move a listing to a different exchange, and never replace a surprising
+  multi-source listed result with model memory that says the company is
+  private. Ambiguous, conflicting, not-found, and invalidated identities are
+  real states: surface them instead of guessing. When the resolver answers with
+  a shortlist — a dual A+H listing, a screening query — show the candidates and
+  ask the user which one to use; re-querying will not collapse a genuine
+  shortlist, and you may not pick one silently.
 - **Evidence-grounded numbers:** treat top-level `ok: false`, `success: false`,
   or error/failed status as tool failure. Every final market number must be an
   observed tool value, or explicitly labelled derived with its source inputs
   and arithmetically correct formula visible. Price claims must surface the
-  locked canonical symbol+venue suffix, actual data source, and quote currency.
+  locked canonical symbol+venue suffix, actual data source, and quote currency
+  — all three may be written in the user's language (`雅虎`, `腾讯`, `元`).
   Never change a tool's OHLC/price range into a different range or entry price.
   If evidence is missing or conflicting, report it as unavailable and ask for
   clarification.
@@ -321,19 +332,32 @@ class ContextBuilder:
         messages.append({"role": "user", "content": enriched})
         return messages
 
+    # Prose tool section is deliberately compact: the full tool schema (name,
+    # description, parameter JSON schema) is sent to the model via the API
+    # ``tools`` array (``ToolRegistry.get_definitions()`` -> ``bind_tools``), so
+    # repeating every description + parameter here as prose roughly doubled the
+    # per-call input tokens for zero model benefit. Keep one short discovery
+    # hint per tool; the authoritative spec arrives with every request. This is
+    # a pure token-cost change: no tool is removed, and the grounding/identity
+    # gate (which validates tool results, not the prompt) is untouched.
+    _TOOL_PROSE_DESC_MAX = 80
+
     def _format_tool_descriptions(self) -> str:
-        """Format tool descriptions."""
+        """Format a compact one-line tool list for the system prompt.
+
+        Returns one line per registered tool: ``- <name>: <short hint>``. The
+        full parameter schema is deliberately NOT repeated here — it is supplied
+        through the API ``tools`` parameter on every call (see
+        ``ToolRegistry.get_definitions``), so the model always has the exact
+        spec even though the prose stays small.
+        """
         lines = []
         for tool in self.registry._tools.values():
-            params = tool.parameters.get("properties", {})
-            required = tool.parameters.get("required", [])
-            param_parts = []
-            for pname, pschema in params.items():
-                req = " (required)" if pname in required else ""
-                param_parts.append(f"    - {pname}: {pschema.get('description', pschema.get('type', ''))}{req}")
-            param_text = "\n".join(param_parts) if param_parts else "    (no params)"
-            lines.append(f"### {tool.name}\n{tool.description}\n  Params:\n{param_text}")
-        return "\n\n".join(lines)
+            desc = (tool.description or "").strip().replace("\n", " ")
+            if len(desc) > self._TOOL_PROSE_DESC_MAX:
+                desc = desc[: self._TOOL_PROSE_DESC_MAX].rstrip() + "…"
+            lines.append(f"- {tool.name}: {desc}" if desc else f"- {tool.name}")
+        return "\n".join(lines)
 
     @staticmethod
     def format_tool_result(tool_call_id: str, tool_name: str, result: str) -> Dict[str, Any]:

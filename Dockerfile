@@ -36,11 +36,22 @@ COPY agent/requirements.txt agent/requirements.txt
 COPY requirements-lock.txt requirements-lock.txt
 RUN pip install --no-cache-dir --require-hashes -r requirements-lock.txt
 
+# Channel SDKs (feishu + telegram) come from their own hash-pinned lock, not
+# from `pip install -e ".[feishu,telegram]"`. An extras install resolves against
+# whatever PyPI serves at build time with no hashes, which would quietly opt the
+# image out of the contract the line above establishes. To change the channel
+# set, edit agent/requirements-channels.txt and regenerate the lock with the
+# command documented at the top of that file.
+COPY requirements-channels-lock.txt requirements-channels-lock.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements-channels-lock.txt
+
 # Copy project + install the CLI entrypoint (editable — the runtime stage
 # re-creates the same /app/agent source tree the .pth file points at).
+# --no-deps because every dependency is already installed from the two locks
+# above; without it pip re-resolves and downloads unhashed wheels.
 COPY pyproject.toml LICENSE README.md ./
 COPY agent/ agent/
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --no-deps -e .
 
 # ============================================================================
 # Stage 3: Runtime — carries the prebuilt venv only, no compilers/dev headers.

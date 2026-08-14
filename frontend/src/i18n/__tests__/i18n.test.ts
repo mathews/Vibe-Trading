@@ -3,6 +3,7 @@ import zhCN from "../locales/zh-CN.json";
 import ja from "../locales/ja.json";
 import ko from "../locales/ko.json";
 import ar from "../locales/ar.json";
+import es from "../locales/es.json";
 import i18n, { SUPPORTED_LANGUAGES, isRtl } from "../index";
 
 // ── helpers ────────────────────────────────────────────────────
@@ -46,6 +47,7 @@ const locales: Record<string, Record<string, unknown>> = {
   ja: ja as unknown as Record<string, unknown>,
   ko: ko as unknown as Record<string, unknown>,
   ar: ar as unknown as Record<string, unknown>,
+  es: es as unknown as Record<string, unknown>,
 };
 
 describe("i18n locale parity", () => {
@@ -136,9 +138,9 @@ describe("i18n utilities", () => {
     expect(isRtl("")).toBe(false);
   });
 
-  it("SUPPORTED_LANGUAGES contains all 5 registered locales", () => {
+  it("SUPPORTED_LANGUAGES contains all 6 registered locales", () => {
     const codes = SUPPORTED_LANGUAGES.map((l) => l.code);
-    expect(codes).toEqual(["en", "zh-CN", "ja", "ko", "ar"]);
+    expect(codes).toEqual(["en", "zh-CN", "ja", "ko", "ar", "es"]);
   });
 
   it("accepts zh-CN as an explicit supported language", async () => {

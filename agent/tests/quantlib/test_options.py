@@ -283,12 +283,55 @@ class TestEdgeCases:
 
     @pytest.mark.parametrize(
         "T, sigma, S, K",
-        [(0.0, 0.2, 100.0, 90.0), (-1.0, 0.2, 100.0, 90.0), (1.0, 0.0, 100.0, 90.0),
-         (1.0, -0.2, 100.0, 90.0), (1.0, 0.2, 0.0, 90.0), (1.0, 0.2, 100.0, 0.0)],
+        [(0.0, 0.2, 100.0, 90.0), (-1.0, 0.2, 100.0, 90.0),
+         (1.0, 0.2, 0.0, 90.0), (1.0, 0.2, 100.0, 0.0)],
     )
     def test_degenerate_inputs_return_intrinsic(self, T, sigma, S, K) -> None:
         assert bs_price(S, K, T, 0.05, sigma, "call") == max(S - K, 0.0)
         assert bs_price(S, K, T, 0.05, sigma, "put") == max(K - S, 0.0)
+
+    @pytest.mark.parametrize("sigma", [0.0, -0.2])
+    def test_zero_volatility_uses_discounted_forward_value(self, sigma: float) -> None:
+        # The call is out of the money at spot but in the money at the
+        # deterministic forward, so immediate intrinsic gets both value and
+        # exercise state wrong.
+        S, K, T, r, q = 100.0, 102.0, 1.0, 0.05, 0.02
+        spot_pv = S * math.exp(-q * T)
+        strike_pv = K * math.exp(-r * T)
+
+        call = bs_price(S, K, T, r, sigma, "call", q)
+        put = bs_price(S, K, T, r, sigma, "put", q)
+
+        assert call == pytest.approx(max(spot_pv - strike_pv, 0.0), abs=1e-12)
+        assert put == pytest.approx(max(strike_pv - spot_pv, 0.0), abs=1e-12)
+        assert call - put == pytest.approx(spot_pv - strike_pv, abs=1e-12)
+        assert all(value == 0.0 for value in bs_greeks(S, K, T, r, sigma, "put", q).values())
+
+    @pytest.mark.parametrize(
+        "S, K, kind, expected_delta_sign",
+        [(100.0, 90.0, "call", 1.0), (80.0, 100.0, "put", -1.0)],
+    )
+    def test_zero_volatility_greeks_follow_the_deterministic_forward(
+        self, S: float, K: float, kind: str, expected_delta_sign: float
+    ) -> None:
+        T, r, q = 1.0, 0.05, 0.02
+        spot_pv = S * math.exp(-q * T)
+        strike_pv = K * math.exp(-r * T)
+        greeks = bs_greeks(S, K, T, r, 0.0, kind, q)
+        theta_sign = 1.0 if kind == "call" else -1.0
+        rho_sign = 1.0 if kind == "call" else -1.0
+
+        assert greeks["delta"] == pytest.approx(
+            expected_delta_sign * math.exp(-q * T), abs=1e-12
+        )
+        assert greeks["gamma"] == 0.0
+        assert greeks["theta"] == pytest.approx(
+            theta_sign * (q * spot_pv - r * strike_pv) / 365.0, abs=1e-12
+        )
+        assert greeks["vega"] == 0.0
+        assert greeks["rho"] == pytest.approx(
+            rho_sign * K * T * math.exp(-r * T) / 100.0, abs=1e-12
+        )
 
     def test_expiring_in_the_money_option_keeps_unit_delta(self) -> None:
         # The regression the skill's copy had: reporting delta 0 for an option

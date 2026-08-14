@@ -225,6 +225,37 @@ def test_label_end_times_accepts_a_timestamp_series():
         assert split.purged >= 0
 
 
+def test_label_ending_between_observations_maps_to_the_prior_observation():
+    index = pd.date_range("2024-01-01", periods=10, freq="B")
+    ends = pd.Series(index, index=index)
+    # Observation 3 starts on Thursday and resolves on Saturday. The second
+    # fold begins on Monday, so this label does not overlap that test block.
+    ends.iloc[3] = pd.Timestamp("2024-01-06")
+
+    split = list(
+        purged_kfold_splits(len(index), ends, n_folds=2, embargo_fraction=0.0)
+    )[1]
+
+    assert split.test_bounds == (5, 9)
+    assert 3 in split.train
+    assert split.purged == 0
+
+
+def test_label_ending_on_an_observation_keeps_that_exact_position():
+    index = pd.date_range("2024-01-01", periods=10, freq="B")
+    ends = pd.Series(index, index=index)
+    # Observation 3 resolves exactly when the second fold begins, so closed
+    # intervals overlap at that instant and the observation must be purged.
+    ends.iloc[3] = index[5]
+
+    split = list(
+        purged_kfold_splits(len(index), ends, n_folds=2, embargo_fraction=0.0)
+    )[1]
+
+    assert 3 not in split.train
+    assert split.purged == 1
+
+
 def test_a_label_ending_before_it_starts_is_rejected():
     bad = np.arange(100) - 5
     with pytest.raises(ValueError, match="cannot end before"):

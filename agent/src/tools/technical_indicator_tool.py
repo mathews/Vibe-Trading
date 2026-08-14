@@ -102,14 +102,21 @@ def _compute_ema(close: pd.Series, period: int) -> float | None:
 
 
 def _compute_rsi(close: pd.Series, period: int = _RSI_PERIOD) -> float | None:
-    """Relative Strength Index (Wilder smoothing) over *period* bars."""
+    """Relative Strength Index (Wilder smoothing) over *period* bars.
+
+    Matches the Wilder-EWM convention already used for RSI elsewhere in this
+    codebase (``shadow_account/extractor.py``, ``shadow_account/scanner.py``,
+    ``skills/technical-basic/example_signal_engine.py``): a plain rolling mean
+    of gains/losses is a materially different, non-Wilder technique and used
+    to diverge from those siblings by several RSI points on ordinary data.
+    """
     if len(close) < period + 1:
         return None
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
-    avg_gain = gain.rolling(window=period).mean().iloc[-1]
-    avg_loss = loss.rolling(window=period).mean().iloc[-1]
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean().iloc[-1]
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean().iloc[-1]
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss

@@ -90,6 +90,11 @@ PROVIDERS: Final[tuple[Provider, ...]] = (
              "SILICONFLOW_GLOBAL_API_KEY", "SILICONFLOW_GLOBAL_BASE_URL",
              "https://api.siliconflow.com/v1", "sk-",
              ("deepseek-ai/DeepSeek-V3.1-Terminus",)),
+    Provider("modelscope", "ModelScope", "Alibaba's OpenAI-compatible MaaS platform",
+             "Qwen/Qwen3.5-27B",
+             "MODELSCOPE_API_KEY", "MODELSCOPE_BASE_URL",
+             "https://api-inference.modelscope.cn/v1", None,
+             ("Qwen/Qwen3.5-27B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B")),
     Provider("nvidia", "NVIDIA NIM", "hosted NVIDIA API catalog",
              "nvidia/nemotron-3-ultra-550b-a55b",
              "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
@@ -124,14 +129,27 @@ def _render_env(values: dict[str, str]) -> str:
 
 
 def _save_partial(values: dict[str, str]) -> None:
-    """Best-effort write to ``.env.partial`` (crash-resilience nicety)."""
+    """Best-effort atomic write to ``.env.partial`` (crash-resilience nicety).
+
+    Mirrors :func:`_finalize`: ``mkstemp`` creates the temp file 0600-only, so
+    the mode is never applied to an already-visible file, and ``replace`` swaps
+    it in atomically. Writing to the destination directly would defeat the whole
+    point of the file — unlinking it first, or truncating it on open, throws away
+    the recovery state this function exists to preserve if the very next write
+    fails.
+    """
     try:
         _env_dir().mkdir(parents=True, exist_ok=True)
-        _partial_path().write_text(_render_env(values), encoding="utf-8")
+        fd, tmp_name = tempfile.mkstemp(prefix=".env.partial.", dir=str(_env_dir()))
         try:
-            _partial_path().chmod(0o600)
-        except OSError:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(_render_env(values))
+            Path(tmp_name).replace(_partial_path())
+        finally:
+            try:
+                Path(tmp_name).unlink()
+            except (FileNotFoundError, OSError):
+                pass
     except OSError:
         pass
 

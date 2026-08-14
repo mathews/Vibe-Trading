@@ -142,6 +142,8 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "hk_equity": ["tencent", "eastmoney", "yahoo", "futu", "akshare", "yfinance", "tushare", "longbridge", "local"],
     "india_equity": ["yahoo", "yfinance", "india_broker", "local"],
     "kr_equity":   ["pykrx", "yahoo", "yfinance", "local"],
+    # TSX (.TO) / TSX Venture (.V): direct Yahoo first, SDK fallback second.
+    "ca_equity":   ["yahoo", "yfinance", "local"],
     # OKX first (native), then dedicated Binance, then generic CCXT / Yahoo.
     "crypto":    ["okx", "binance", "ccxt", "yfinance", "local"],
     "futures":   ["tushare", "akshare", "local"],

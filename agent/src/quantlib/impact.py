@@ -38,6 +38,20 @@ import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
 
+#: Public surface. `quantlib_call` dispatches on ``__all__`` alone, so a module
+#: without it is unreachable from Web / API / MCP even when the tool allowlists
+#: it — which is exactly what happened to this module until 0.1.13.
+__all__ = [
+    "DEFAULT_DELAY_BARS",
+    "DEFAULT_LINEAR_IMPACT_COEFF",
+    "DEFAULT_SLIPPAGE_BPS",
+    "DEFAULT_SQRT_IMPACT_ETA",
+    "delayed_execution",
+    "fixed_slippage",
+    "linear_impact",
+    "sqrt_impact",
+]
+
 #: Default fixed slippage in basis points (1bp = 0.01%).
 DEFAULT_SLIPPAGE_BPS = 5.0
 

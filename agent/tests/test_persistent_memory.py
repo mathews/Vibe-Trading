@@ -63,10 +63,18 @@ class TestTokenize:
         assert "world" in tokens
         assert "testing" in tokens
 
-    def test_short_words_excluded(self) -> None:
-        tokens = _tokenize("I am ok no")
-        # All < 3 chars, should be excluded
+    def test_single_char_words_excluded(self) -> None:
+        tokens = _tokenize("I a")
+        # Single ASCII chars carry no discriminating value, should be excluded
         assert len(tokens) == 0
+
+    def test_two_char_words_included(self) -> None:
+        # Regression: the fallback token-scan used a 3-char minimum while
+        # search_index.py's FTS5 sanitizer used 2 chars, so short tokens like
+        # ticker symbols ("GE") or country codes ("US") were retrievable via
+        # FTS but silently invisible whenever VT_MEMORY_FTS_INDEX was off.
+        tokens = _tokenize("GE US ok no")
+        assert tokens == {"ge", "us", "ok", "no"}
 
     def test_cjk_characters(self) -> None:
         tokens = _tokenize("比特币价格分析")

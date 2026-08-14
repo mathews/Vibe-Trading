@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -20,6 +19,7 @@ from urllib.parse import urljoin
 
 import requests
 
+from src.config.accessor import get_env_config
 from src.config.paths import get_runtime_root
 
 logger = logging.getLogger(__name__)
@@ -111,10 +111,14 @@ class EtoroConfig:
 
 
 _OVERRIDE_KEYS = ("api_key", "user_key", "profile")
-_ENV_KEY_MAP = {
-    "api_key": "ETORO_API_KEY",
-    "user_key": "ETORO_USER_KEY",
-}
+
+
+def _environment_values() -> dict[str, str]:
+    data = get_env_config().data
+    return {
+        "api_key": str(data.etoro_api_key or "").strip(),
+        "user_key": str(data.etoro_user_key or "").strip(),
+    }
 
 
 def build_config(
@@ -145,8 +149,7 @@ def load_config() -> EtoroConfig:
             base = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise EtoroConfigError(f"invalid eToro config at {path}: {exc}") from exc
-    for field, env_name in _ENV_KEY_MAP.items():
-        env_val = os.getenv(env_name, "").strip()  # noqa: env-gate — connector credential helper
+    for field, env_val in _environment_values().items():
         if env_val:
             base[field] = env_val
     if not base:
@@ -173,6 +176,30 @@ def _missing_fields(cfg: EtoroConfig) -> list[str]:
     if not cfg.user_key:
         missing.append("user_key")
     return missing
+
+
+def credential_source() -> str | None:
+    """Return where credentials were loaded from for runtime UI metadata."""
+    path = config_path()
+    file_present = False
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if str(data.get("api_key") or "").strip() or str(data.get("user_key") or "").strip():
+                file_present = True
+        except (OSError, ValueError, json.JSONDecodeError):
+            file_present = False
+    if any(_environment_values().values()):
+        return "environment"
+    if file_present:
+        return "runtime_file"
+    return None
+
+
+def _missing_credential_code(cfg: EtoroConfig) -> str:
+    if cfg.api_key or cfg.user_key:
+        return "credentials_partial"
+    return "credentials_missing"
 
 
 def public_config(cfg: EtoroConfig) -> dict[str, Any]:

@@ -133,9 +133,9 @@ def _as_label_spans(
         starts = label_end_times.index
         ends = label_end_times.to_numpy()
         # searchsorted on the start index converts label end *times* into label
-        # end *positions*; 'left' then clipping keeps a label that ends between
-        # two observations attached to the earlier one.
-        positions = np.searchsorted(starts, ends, side="left")
+        # end *positions*; the right insertion point minus one keeps a label
+        # that ends between two observations attached to the earlier one.
+        positions = np.searchsorted(starts, ends, side="right") - 1
         positions = np.clip(positions, np.arange(len(starts)), len(starts) - 1)
         span_ends = positions.astype(int)
     else:

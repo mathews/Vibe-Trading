@@ -10,7 +10,7 @@ import os
 import signal
 import threading
 import time
-from collections import defaultdict, deque
+from collections import deque
 from datetime import datetime, timezone
 from typing import Deque, Dict, Optional, Tuple
 
@@ -71,19 +71,50 @@ class _SlidingWindowRateLimiter:
     def __init__(self, max_requests: int, window_seconds: float) -> None:
         self._max = max_requests
         self._window = window_seconds
-        self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        self._hits: Dict[str, Deque[float]] = {}
         self._lock = threading.Lock()
+        self._last_sweep: float = 0.0
+
+    def _sweep_expired_locked(self, cutoff: float) -> None:
+        """Drop buckets whose entries have all expired. Caller holds the lock."""
+        stale_keys = [
+            k for k, b in self._hits.items()
+            if not b or b[0] < cutoff
+        ]
+        for k in stale_keys:
+            # Pop expired entries; if the bucket is empty, remove it.
+            b = self._hits[k]
+            while b and b[0] < cutoff:
+                b.popleft()
+            if not b:
+                del self._hits[k]
 
     def allow(self, key: str) -> bool:
         """Record a hit for ``key`` and report whether it stays within budget."""
         now = time.monotonic()
         cutoff = now - self._window
         with self._lock:
-            bucket = self._hits[key]
-            while bucket and bucket[0] < cutoff:
-                bucket.popleft()
-            if len(bucket) >= self._max:
+            if self._max <= 0:
                 return False
+            # Periodic sweep: clean up expired buckets so keys that were
+            # accessed once and never again do not accumulate without bound.
+            # Throttled to once per window to avoid sweeping on every call.
+            if now - self._last_sweep >= self._window:
+                self._sweep_expired_locked(cutoff)
+                self._last_sweep = now
+
+            bucket = self._hits.get(key)
+            if bucket is not None:
+                while bucket and bucket[0] < cutoff:
+                    bucket.popleft()
+                if len(bucket) >= self._max:
+                    return False
+                if not bucket:
+                    del self._hits[key]
+                    bucket = None
+            if bucket is None:
+                bucket = deque()
+                self._hits[key] = bucket
             bucket.append(now)
             return True
 

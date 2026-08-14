@@ -18,6 +18,7 @@ import copy
 import json
 import logging
 import queue
+import shutil
 import sys
 import threading
 import time as _time
@@ -47,7 +48,8 @@ from src.providers.content_filter import (
 from src.config.accessor import get_env_config
 from src.config.paths import get_runs_dir, get_sessions_dir
 from src.tools.background_tools import get_background_manager
-from src.config.limits import TOOL_RESULT_LIMIT, truncate_tool_result
+from src.config.limits import truncate_tool_result
+from src.tools.path_utils import safe_run_dir
 from src.tools.redaction import redact_payload, redact_tool_result
 
 RUNS_DIR = get_runs_dir()
@@ -61,6 +63,7 @@ COLLAPSE_HEAD = 900
 COLLAPSE_TAIL = 500
 
 TAIL_TOKEN_BUDGET = 20_000
+SUMMARY_CHUNK_CHARS = 80_000
 
 
 def _override(name: str):
@@ -222,6 +225,83 @@ def estimate_tokens(messages: list) -> int:
         Estimated token count.
     """
     return len(json.dumps(messages, default=str, ensure_ascii=False)) // 4
+
+
+def _summary_chunks(msgs: list, limit: int = SUMMARY_CHUNK_CHARS) -> list[str]:
+    """Serialize messages into bounded chunks for lossless summary folding.
+
+    Messages are packed by whole-message boundaries so that ordinary chunks
+    remain valid JSON arrays and a summary call never receives a message that
+    was silently cut off. A single oversized message is split into explicitly
+    labeled raw-JSON fragments instead: the label tells the summarizer that a
+    fragment is not valid JSON by itself, while retaining every character
+    instead of dropping or silently truncating part of the conversation.
+
+    Args:
+        msgs: Messages to serialize and divide into chunks.
+        limit: Maximum number of characters allowed in each returned chunk.
+
+    Returns:
+        JSON-array strings, or labeled raw-JSON fragments for an oversized
+        message, each no longer than ``limit`` characters.
+
+    Raises:
+        ValueError: If ``limit`` cannot accommodate an empty JSON array or an
+            oversized-message fragment label.
+    """
+    if limit < 2:
+        raise ValueError("summary chunk limit must be at least 2 characters")
+
+    serialized = [json.dumps(msg, default=str, ensure_ascii=False) for msg in msgs]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 2  # The opening and closing brackets.
+
+    def flush_current() -> None:
+        nonlocal current, current_len
+        if current:
+            chunks.append("[" + ", ".join(current) + "]")
+            current = []
+            current_len = 2
+
+    for part in serialized:
+        # The two brackets are part of the chunk, so a message that only fits
+        # below ``limit`` as a raw JSON string may still need fragmentation.
+        if len(part) + 2 <= limit:
+            projected_len = current_len + len(part) + (2 if current else 0)
+            if current and projected_len > limit:
+                flush_current()
+            current.append(part)
+            current_len += len(part) + (2 if len(current) > 1 else 0)
+            continue
+
+        flush_current()
+
+        def fragment_prefix(index: int, total: int) -> str:
+            return (
+                f"[fragment {index}/{total} of one oversized message — "
+                "raw JSON slice, not valid JSON on its own]\n"
+            )
+
+        total = 1
+        while True:
+            capacity = limit - len(fragment_prefix(total, total))
+            if capacity <= 0:
+                raise ValueError(
+                    "summary chunk limit is too small for an oversized-message label"
+                )
+            needed = max(1, (len(part) + capacity - 1) // capacity)
+            if needed <= total:
+                break
+            total = needed
+
+        for index in range(1, total + 1):
+            prefix = fragment_prefix(index, total)
+            start = (index - 1) * capacity
+            chunks.append(prefix + part[start : start + capacity])
+
+    flush_current()
+    return chunks or ["[]"]
 
 
 def _microcompact(messages: list) -> None:
@@ -497,6 +577,62 @@ def _normalize_tool_run_dir(args: dict[str, Any], memory_run_dir: str | None) ->
     if not candidate.is_absolute():
         normalized["run_dir"] = str((Path(memory_run_dir) / candidate).resolve())
     return normalized
+
+
+def _archive_backtest_result(result: str, active_run_dir: str | None) -> bool:
+    """Copy a successful detached backtest into the active, reportable run.
+
+    The model may choose another allowed run directory while iterating.  The
+    CLI and web API, however, identify the turn by ``active_run_dir``.  Keep
+    that public identity stable by copying only deterministic backtest output
+    into the active run as soon as the backtest tool succeeds.
+
+    Both paths are re-validated here.  ``backtest`` already refuses a run_dir
+    outside the allowed roots, so today the source cannot be arbitrary — but
+    that invariant lives in another module and this function reads its path back
+    out of a *tool result* rather than from the validated arguments.  Checking
+    locally keeps a copy loop from depending on a guarantee made elsewhere.
+    """
+    if not active_run_dir:
+        return False
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    source_value = payload.get("run_dir")
+    if not source_value:
+        return False
+    try:
+        source = safe_run_dir(str(source_value))
+        target = safe_run_dir(str(active_run_dir))
+    except ValueError:
+        logger.warning("Refusing to archive backtest output from outside the allowed run roots")
+        return False
+    if source == target or not (source / "artifacts" / "metrics.csv").is_file():
+        return False
+
+    target.mkdir(parents=True, exist_ok=True)
+    for directory in ("artifacts", "code", "logs"):
+        source_dir = source / directory
+        if source_dir.is_dir():
+            shutil.copytree(source_dir, target / directory, dirs_exist_ok=True)
+    for filename in (
+        "config.json",
+        "design_spec.json",
+        "planner_output.json",
+        "rag_metadata.json",
+        "review_report.json",
+        "run_card.json",
+        "run_card.md",
+        "llm_usage.json",
+    ):
+        source_file = source / filename
+        if source_file.is_file():
+            shutil.copy2(source_file, target / filename)
+    return (target / "artifacts" / "metrics.csv").is_file()
 
 
 class AgentLoop:
@@ -1744,6 +1880,11 @@ class AgentLoop:
         success = _is_tool_success(result)
         if success:
             self._called_ok.add(tc.name)
+            if tc.name == "backtest":
+                try:
+                    _archive_backtest_result(result, self.memory.run_dir)
+                except OSError as exc:
+                    logger.warning("Could not archive backtest output into active run: %s", exc)
 
         if self._grounding is not None:
             self._grounding.ingest_tool_result(
@@ -1859,20 +2000,28 @@ class AgentLoop:
         # Build focus section
         focus_section = _FOCUS_SECTION.format(topic=focus_topic) if focus_topic else ""
 
-        # Build summary prompt (structured template or iterative update)
-        conv_text = json.dumps(head, default=str, ensure_ascii=False)[:80000]
+        # Fold every head chunk so no message falls between the summary prompt
+        # and the preserved tail. The first fresh chunk gets the full
+        # structured handoff; subsequent chunks incrementally update it.
+        chunks = _summary_chunks(head)
+        logger.info("Auto compact: folding %d summary chunks", len(chunks))
+        summary = self._previous_summary or ""
+        for conv_text in chunks:
+            # Structured template while there is still nothing to update — that
+            # covers a fresh session's first chunk and the corner case where
+            # every fold so far returned empty content.
+            if not summary:
+                prompt = _STRUCTURED_SUMMARY_PROMPT.format(focus_section=focus_section) + conv_text
+            else:
+                prompt = _ITERATIVE_UPDATE_PROMPT.format(
+                    previous_summary=summary,
+                    new_turns=conv_text,
+                    focus_section=focus_section,
+                )
 
-        if self._previous_summary:
-            prompt = _ITERATIVE_UPDATE_PROMPT.format(
-                previous_summary=self._previous_summary,
-                new_turns=conv_text,
-                focus_section=focus_section,
-            )
-        else:
-            prompt = _STRUCTURED_SUMMARY_PROMPT.format(focus_section=focus_section) + conv_text
-
-        summary_resp = self.llm.chat([{"role": "user", "content": prompt}])
-        summary = summary_resp.content or ""
+            summary_resp = self.llm.chat([{"role": "user", "content": prompt}])
+            if summary_resp.content:
+                summary = summary_resp.content
         self._previous_summary = summary
 
         tokens_before = estimate_tokens(messages)
@@ -1882,6 +2031,7 @@ class AgentLoop:
                 "iter": iteration,
                 "tokens_before": tokens_before,
                 "focus_topic": focus_topic or "(none)",
+                "summary_chunks": len(chunks),
             },
             field="summary",
             value=summary,

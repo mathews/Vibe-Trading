@@ -420,6 +420,36 @@ def test_fit_is_robust_to_noise_and_stays_close_to_the_generating_curve():
     assert np.max(np.abs(fit(TENORS) - clean)) < 5e-4
 
 
+def test_fit_keeps_refined_decay_parameter_inside_requested_bounds():
+    bounds = (0.05, 2.0)
+    observed = nelson_siegel(TENORS, 0.03, -0.02, 0.015, 100.0)
+
+    fit = fit_yield_curve(
+        TENORS,
+        observed,
+        model="nelson_siegel",
+        decay_bounds=bounds,
+        grid_points=20,
+    )
+
+    assert bounds[0] <= fit.params[-1] <= bounds[1]
+
+
+def test_svensson_fit_keeps_both_refined_decay_parameters_inside_bounds():
+    bounds = (0.05, 2.0)
+    observed = svensson(TENORS, 0.04, -0.02, 0.02, -0.01, 20.0, 100.0)
+
+    fit = fit_yield_curve(
+        TENORS,
+        observed,
+        model="svensson",
+        decay_bounds=bounds,
+        grid_points=12,
+    )
+
+    assert all(bounds[0] <= decay <= bounds[1] for decay in fit.params[-2:])
+
+
 def test_curve_fit_is_frozen_and_callable():
     fit = fit_yield_curve(TENORS, nelson_siegel(TENORS, 0.04, -0.01, 0.01, 2.0),
                           model="nelson_siegel")

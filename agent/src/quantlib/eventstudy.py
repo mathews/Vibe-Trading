@@ -367,8 +367,11 @@ def event_study(
             dropped.append((symbol, event_date, "symbol not in returns frame"))
             continue
 
-        position = index.searchsorted(event_date)
-        if position >= len(index):
+        position = int(index.searchsorted(event_date, side="right")) - 1
+        if position < 0:
+            dropped.append((symbol, event_date, "event date is before the frame starts"))
+            continue
+        if event_date > index[-1]:
             dropped.append((symbol, event_date, "event date is after the frame ends"))
             continue
 

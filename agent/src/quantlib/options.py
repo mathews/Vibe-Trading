@@ -14,10 +14,12 @@ Conventions, fixed here so callers never have to guess:
   * Nothing is rounded. Rounding is a presentation decision and it destroys the
     vega precision the implied-volatility solver needs.
 
-Degenerate inputs (``T <= 0``, ``sigma <= 0``, ``S <= 0`` or ``K <= 0``) collapse
-the lognormal to a point mass, so the price is the intrinsic value and every
-second-order Greek is zero. They return that rather than raising, because an
-expiring or zero-strike leg is a normal state for a backtest to walk through.
+Degenerate inputs collapse the lognormal to a point mass. At expiry, or for a
+non-positive spot/strike, the price is the immediate intrinsic value. With time
+remaining but ``sigma <= 0``, the terminal spot is deterministic instead, so
+the price is the discounted forward intrinsic value. They return that rather
+than raising, because an expiring or zero-volatility leg is a normal state for a
+backtest to walk through.
 """
 
 from __future__ import annotations
@@ -123,19 +125,24 @@ def _intrinsic(S: float, K: float, option_type: str) -> float:
     return float(max(S - K, 0.0) if option_type == _CALL else max(K - S, 0.0))
 
 
-def _is_degenerate(S: float, K: float, T: float, sigma: float) -> bool:
-    """Report whether the lognormal has collapsed to a point mass.
+def _uses_immediate_intrinsic(S: float, K: float, T: float) -> bool:
+    """Report whether pricing must use immediate intrinsic value.
 
     Args:
         S: Underlying spot price.
         K: Strike price.
         T: Time to expiry in years.
-        sigma: Annualised volatility.
-
     Returns:
-        True when no diffusion remains, so closed-form d1/d2 are undefined.
+        True at/past expiry or when spot/strike makes lognormal pricing
+        undefined.
     """
-    return T <= 0 or sigma <= 0 or S <= 0 or K <= 0
+    return T <= 0 or S <= 0 or K <= 0
+
+
+def _discounted_forward_values(S: float, K: float, T: float, r: float,
+                               q: float) -> tuple[float, float]:
+    """Return discounted spot and strike values for deterministic pricing."""
+    return float(S * np.exp(-q * T)), float(K * np.exp(-r * T))
 
 
 def _d1_d2(S: float, K: float, T: float, r: float, sigma: float,
@@ -172,7 +179,9 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float,
         q: Continuous dividend yield, annualised. Defaults to 0.
 
     Returns:
-        Theoretical option price. Degenerate inputs return intrinsic value.
+        Theoretical option price. Expired inputs return immediate intrinsic
+        value; non-positive volatility with time remaining returns discounted
+        forward intrinsic value.
 
     Raises:
         ValueError: If ``option_type`` is neither call nor put.
@@ -182,8 +191,15 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float,
         10.45
     """
     option_type = normalise_option_type(option_type)
-    if _is_degenerate(S, K, T, sigma):
+    if _uses_immediate_intrinsic(S, K, T):
         return _intrinsic(S, K, option_type)
+    if sigma <= 0:
+        spot_pv, strike_pv = _discounted_forward_values(S, K, T, r, q)
+        return float(
+            max(spot_pv - strike_pv, 0.0)
+            if option_type == _CALL
+            else max(strike_pv - spot_pv, 0.0)
+        )
 
     d1, d2 = _d1_d2(S, K, T, r, sigma, q)
     spot_pv = S * np.exp(-q * T)
@@ -210,17 +226,15 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
     Returns:
         Dict with ``delta``, ``gamma``, ``theta``, ``vega`` and ``rho``.
         ``theta`` is per calendar day; ``vega`` and ``rho`` are per 1 percentage
-        point. Degenerate inputs return the point-mass Greeks: delta is 1/0 for
-        a call and 0/-1 for a put depending on moneyness, everything else zero.
-        Exactly at the money the degenerate delta is the limiting value, 0.5 for
-        a call and -0.5 for a put, which is the only pair that keeps put-call
-        delta parity holding at the tie as it does everywhere else.
+        point. Expired inputs return immediate-intrinsic Greeks. Non-positive
+        volatility with time remaining returns the first-order sensitivities of
+        discounted forward intrinsic value, with gamma and vega zero.
 
     Raises:
         ValueError: If ``option_type`` is neither call nor put.
     """
     option_type = normalise_option_type(option_type)
-    if _is_degenerate(S, K, T, sigma):
+    if _uses_immediate_intrinsic(S, K, T):
         # An expiring in-the-money option still has unit exposure to spot, so
         # delta must not be reported as zero here. At S == K the one-sided
         # limits disagree (1 from above, 0 from below for a call), so take the
@@ -233,6 +247,35 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
         else:
             delta = -1.0 if S < K else 0.0
         return {"delta": delta, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+
+    if sigma <= 0:
+        spot_pv, strike_pv = _discounted_forward_values(S, K, T, r, q)
+        forward_moneyness = spot_pv - strike_pv
+        if forward_moneyness == 0:
+            exercise_weight = 0.5
+        elif option_type == _CALL:
+            exercise_weight = 1.0 if forward_moneyness > 0 else 0.0
+        else:
+            exercise_weight = 1.0 if forward_moneyness < 0 else 0.0
+
+        disc_q = float(np.exp(-q * T))
+        rho_scale = K * T * float(np.exp(-r * T)) / 100.0
+        carry = (q * spot_pv - r * strike_pv) / 365.0
+        if option_type == _CALL:
+            delta = exercise_weight * disc_q
+            theta = exercise_weight * carry
+            rho = exercise_weight * rho_scale
+        else:
+            delta = -exercise_weight * disc_q
+            theta = -exercise_weight * carry
+            rho = -exercise_weight * rho_scale
+        return {
+            "delta": float(delta),
+            "gamma": 0.0,
+            "theta": float(theta),
+            "vega": 0.0,
+            "rho": float(rho),
+        }
 
     sqrt_T = float(np.sqrt(T))
     d1, d2 = _d1_d2(S, K, T, r, sigma, q)

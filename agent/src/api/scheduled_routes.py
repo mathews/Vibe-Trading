@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from starlette.responses import Response
 
 from src.config.accessor import get_env_config
 
@@ -353,7 +354,7 @@ def register_scheduled_routes(
         status_code=status.HTTP_204_NO_CONTENT,
         dependencies=[Depends(require_auth)],
     )
-    async def delete_scheduled_run(job_id: str) -> None:
+    async def delete_scheduled_run(job_id: str) -> Response:
         """Cancel (delete) a scheduled research job by id."""
         _host_validate_path_param(job_id, "job_id")
         removed = _get_scheduled_research_store().delete(job_id)
@@ -361,6 +362,7 @@ def register_scheduled_routes(
             raise HTTPException(
                 status_code=404, detail=f"scheduled run {job_id} not found"
             )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # --- Playbook templates ---
     #

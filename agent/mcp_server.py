@@ -6,7 +6,7 @@ Zero API key required for HK/US/crypto research markets (yfinance, OKX,
 AKShare are free). Trading connector tools are profile-scoped and require the
 selected connector's own local app or OAuth setup.
 
-Surfaces 62 tools: skills, research goals, backtest/factor/options/pattern
+Surfaces 70 tools: skills, research goals, backtest/factor/options/pattern
 analysis, market data, fundamentals & capital-flow & news & discovery
 (get_fund_flow / get_dragon_tiger / get_northbound_flow / get_margin_trading /
 get_block_trades / get_shareholder_count / get_lockup_expiry / get_sector_info /
@@ -15,7 +15,9 @@ get_financial_statements / get_options_chain / get_stock_profile /
 screen_market / search_symbol / get_macro_series / iwencai_search /
 qveris_search / qveris_inspect / qveris_execute),
 institutional-research and alternative data (get_institutional_holdings /
-etf_holdings / prediction_market / research_papers), read-only
+etf_holdings / prediction_market / research_papers), read-only finance math and
+market analytics (quantlib_call / cashflow_performance / orderbook_depth /
+sentiment / technical_indicators / get_fundamentals), read-only
 trading-connector reads, swarm orchestration, trade-journal and shadow-account
 analysis. Every exposed tool is read-only or research-only; no order-placing or
 order-cancelling tool is ever surfaced via MCP. The QVeris tools additionally
@@ -801,6 +803,141 @@ def factor_analysis(
     )
 
 
+@mcp.tool
+def alpha_zoo(
+    action: str,
+    alpha_id: str | None = None,
+    zoo: str | None = None,
+    theme: str | None = None,
+    universe: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Browse the bundled Alpha Zoo registry.
+
+    Args:
+        action: ``list_alphas``, ``get_alpha``, or ``health``.
+        alpha_id: Alpha id required by ``get_alpha``.
+        zoo: Optional zoo filter for ``list_alphas``.
+        theme: Optional theme filter for ``list_alphas``.
+        universe: Optional universe filter for ``list_alphas``.
+        limit: Maximum number of alphas returned by ``list_alphas``.
+    """
+    registry = _get_registry()
+    params: dict[str, Any] = {"action": action, "limit": limit}
+    if alpha_id is not None:
+        params["alpha_id"] = alpha_id
+    if zoo is not None:
+        params["zoo"] = zoo
+    if theme is not None:
+        params["theme"] = theme
+    if universe is not None:
+        params["universe"] = universe
+    return registry.execute("alpha_zoo", params)
+
+
+@mcp.tool
+def alpha_bench(
+    universe: str,
+    period: str,
+    alpha_id: str | None = None,
+    zoo: str | None = None,
+    top: int = 20,
+    output_dir: str | None = None,
+) -> str:
+    """Benchmark one Alpha Zoo alpha or a complete zoo on a universe.
+
+    Args:
+        universe: Universe to benchmark, such as ``sp500`` or ``csi300``.
+        period: ``YYYY-YYYY`` or ``YYYY-MM-DD/YYYY-MM-DD``.
+        alpha_id: Optional single alpha id; mutually exclusive with ``zoo``.
+        zoo: Optional zoo id; mutually exclusive with ``alpha_id``.
+        top: Number of top-ranked alphas to include in the report.
+        output_dir: Optional directory for the generated HTML report.
+    """
+    if not alpha_id and not zoo:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "alpha_id or zoo is required for MCP alpha_bench",
+            },
+            ensure_ascii=False,
+        )
+    if alpha_id and zoo:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "alpha_id and zoo are mutually exclusive",
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        from datetime import date
+
+        from src.tools.alpha_bench_tool import _parse_period
+
+        start_raw, end_raw = _parse_period(period)
+        start_date = date.fromisoformat(start_raw)
+        end_date = date.fromisoformat(end_raw)
+        try:
+            max_end = start_date.replace(year=start_date.year + 10)
+        except ValueError:
+            max_end = start_date.replace(year=start_date.year + 10, day=28)
+        if end_date > max_end:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "MCP alpha_bench period must be no more than 10 years",
+                },
+                ensure_ascii=False,
+            )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+
+    if top <= 0 or top > 100:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "MCP alpha_bench top must be between 1 and 100",
+            },
+            ensure_ascii=False,
+        )
+
+    params: dict[str, Any] = {
+        "universe": universe,
+        "period": period,
+        "top": top,
+    }
+    if alpha_id is not None:
+        params["alpha_id"] = alpha_id
+    if zoo is not None:
+        params["zoo"] = zoo
+
+    if output_dir:
+        from src.config.paths import get_runtime_root
+        from src.tools.path_utils import allowed_write_roots, resolve_safe_path
+
+        try:
+            report_roots = [
+                Path.home() / ".vibe-trading" / "reports",
+                get_runtime_root() / "reports",
+                *allowed_write_roots(),
+            ]
+            params["output_dir"] = str(
+                resolve_safe_path(
+                    output_dir,
+                    None,
+                    report_roots,
+                    purpose="alpha bench report",
+                )
+            )
+        except ValueError as exc:
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+
+    registry = _get_registry()
+    return registry.execute("alpha_bench", params)
+
+
 # ---------------------------------------------------------------------------
 # Options pricing tool
 # ---------------------------------------------------------------------------
@@ -1416,7 +1553,8 @@ def get_market_data(
     """Fetch OHLCV market data for stocks, crypto, or mixed symbols.
 
     Supported sources:
-    - "yfinance": HK/US equities (free, e.g. AAPL.US, 700.HK)
+    - "yfinance" / "yahoo": HK/US/Canada equities (free, e.g. AAPL.US,
+      700.HK, TD.TO, PNG.V)
     - "okx": cryptocurrency (free, e.g. BTC-USDT, ETH-USDT)
     - "tushare": China A-shares (requires TUSHARE_TOKEN, e.g. 000001.SZ)
     - "baostock": China A-shares via TCP protocol, bypasses HTTP CDN blocks (e.g. 000001.SZ, 601595.SH)
@@ -1427,16 +1565,23 @@ def get_market_data(
     - "auto": auto-detect based on symbol format (with fallback)
 
     Args:
-        codes: List of symbols (e.g. ["AAPL.US", "BTC-USDT", "000001.SZ"]).
+        codes: List of symbols (e.g. ["AAPL.US", "TD.TO", "BTC-USDT", "000001.SZ"]).
         start_date: Start date (YYYY-MM-DD).
         end_date: End date (YYYY-MM-DD).
-        source: Data source ("auto", "yfinance", "okx", "tushare", "baostock", "tencent", "akshare", "ccxt").
+        source: Data source. Prefer ``auto``; ``yahoo``/``yfinance`` serve
+            Canada, US, and HK equities.
         interval: Bar size (1m/5m/15m/30m/1H/4H/1D, default "1D").
         max_rows: Per-symbol row cap (default 250) so the response stays
             within the MCP token budget. A symbol exceeding it returns an
             even-stride downsample (every step-th bar, last bar pinned)
             plus truncation metadata. Set max_rows=0 for all rows
             (unbounded, legacy behavior).
+
+    Volume units: the ``volume`` column unit is source- and market-dependent
+    (A-share sources report board lots of 100 shares; HK/US sources report
+    single shares). Each symbol's ``_provenance.volume_unit`` states the unit
+    of the returned rows ("lots" / "shares"; null = source undeclared) — read
+    it before interpreting or comparing volume values across symbols/sources.
     """
     return fetch_market_data_json(
         codes=codes,
@@ -1824,10 +1969,10 @@ def search_symbol(query: str, limit: int = 10) -> str:
     """Resolve a company name or ticker fragment to candidate trading symbols.
 
     Returns candidates with their market in the project's symbol convention
-    (A-shares 600519.SH, Hong Kong 00700.HK, U.S. AAPL.US, plus crypto/index/FX
-    from Yahoo). Searches Eastmoney and Yahoo and, for U.S. equities, attaches
-    the SEC CIK. Use this to turn an ambiguous name into a concrete symbol
-    before calling get_market_data or get_sec_filings.
+    (A-shares 600519.SH, Hong Kong 00700.HK, U.S. AAPL.US, Canada TD.TO/PNG.V,
+    plus crypto/index/FX from Yahoo). Searches Eastmoney and Yahoo and, for U.S.
+    equities, attaches the SEC CIK. Use this to turn an ambiguous name into a
+    concrete symbol before calling get_market_data or get_sec_filings.
 
     Args:
         query: Free-text company name or ticker fragment (Chinese or English).
@@ -2018,6 +2163,16 @@ _MIRRORED_TOOL_SOURCES = (
     ("src.tools.etf_holdings_tool", "EtfHoldingsTool"),
     ("src.tools.prediction_market_tool", "PredictionMarketTool"),
     ("src.tools.research_papers_tool", "ResearchPapersTool"),
+    # Read-only compute and market-data tools that had reached the agent but
+    # not MCP. Mirroring is the right path for all of them: each already owns a
+    # multi-mode ``parameters`` schema, so re-declaring Python signatures here
+    # would create the second definition this block exists to avoid.
+    ("src.tools.quantlib_tool", "QuantlibCallTool"),
+    ("src.tools.cashflow_analytics_tool", "CashFlowPerformanceTool"),
+    ("src.tools.orderbook_depth_tool", "OrderBookDepthTool"),
+    ("src.tools.sentiment_tool", "SentimentTool"),
+    ("src.tools.technical_indicator_tool", "TechnicalIndicatorTool"),
+    ("src.tools.get_fundamentals_tool", "GetFundamentalsTool"),
 )
 
 
