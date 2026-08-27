@@ -63,6 +63,16 @@ def _parse_env_bool(v: Any) -> Any:
 EnvBool = Annotated[bool, BeforeValidator(_parse_env_bool)]
 
 
+def _parse_responses_api_bool(v: Any) -> Any:
+    """Enable Responses transport only for the documented literal ``true``."""
+    if isinstance(v, str):
+        return v.strip() == "true"
+    return v
+
+
+ResponsesApiBool = Annotated[bool, BeforeValidator(_parse_responses_api_bool)]
+
+
 # ---------------------------------------------------------------------------
 # Base class
 # ---------------------------------------------------------------------------
@@ -133,6 +143,9 @@ class LLMConfig(_EnvBase):
     timeout_seconds: int = Field(alias="TIMEOUT_SECONDS", default=120)
     max_retries: int = Field(alias="MAX_RETRIES", default=2)
     langchain_reasoning_effort: str = Field(alias="LANGCHAIN_REASONING_EFFORT", default="")
+    langchain_use_responses_api: ResponsesApiBool | None = Field(
+        alias="LANGCHAIN_USE_RESPONSES_API", default=None
+    )
     vibe_trading_deepseek_adapter: str = Field(alias="VIBE_TRADING_DEEPSEEK_ADAPTER", default="auto")
     moonshot_user_agent: str = Field(alias="MOONSHOT_USER_AGENT", default="")
     openai_codex_base_url: str = Field(
@@ -188,6 +201,9 @@ class DataConfig(_EnvBase):
     aliyun_iqs_api_key: str = Field(alias="ALIYUN_IQS_API_KEY", default="")
     qveris_api_key: str = Field(alias="QVERIS_API_KEY", default="")
     qveris_base_url: str = Field(alias="QVERIS_BASE_URL", default="")
+    tickerall_api_key: str = Field(alias="TICKERALL_API_KEY", default="")
+    tickerall_account_id: str = Field(alias="TICKERALL_ACCOUNT_ID", default="")
+    tickerall_base_url: str = Field(alias="TICKERALL_BASE_URL", default="")
     rsshub_base_url: str = Field(alias="RSSHUB_BASE_URL", default="")
     dashscope_api_key: str = Field(alias="DASHSCOPE_API_KEY", default="")
     longbridge_app_key: str = Field(alias="LONGBRIDGE_APP_KEY", default="")
@@ -312,7 +328,22 @@ class SwarmConfig(_EnvBase):
     swarm_timeout: int = Field(alias="SWARM_TIMEOUT", default=1800)
     swarm_heartbeat_interval_s: float = Field(alias="SWARM_HEARTBEAT_INTERVAL_S", default=3.0)
     swarm_stream_retry_delay_s: float = Field(alias="SWARM_STREAM_RETRY_DELAY_S", default=1.0)
+    swarm_worker_retry_base_delay_s: float = Field(
+        alias="SWARM_WORKER_RETRY_BASE_DELAY_S", default=1.0, ge=0
+    )
+    swarm_worker_retry_max_delay_s: float = Field(
+        alias="SWARM_WORKER_RETRY_MAX_DELAY_S", default=30.0, ge=0
+    )
     swarm_grounding_max_symbols: int = Field(alias="SWARM_GROUNDING_MAX_SYMBOLS", default=8)
+
+    @model_validator(mode="after")
+    def _validate_worker_retry_delays(self) -> SwarmConfig:
+        if self.swarm_worker_retry_max_delay_s < self.swarm_worker_retry_base_delay_s:
+            raise ValueError(
+                "SWARM_WORKER_RETRY_MAX_DELAY_S must be greater than or equal to "
+                "SWARM_WORKER_RETRY_BASE_DELAY_S"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +368,12 @@ class AgentTuningConfig(_EnvBase):
     vt_stream_retry_delay_s: float = Field(alias="VT_STREAM_RETRY_DELAY_S", default=1.0)
     vibe_trading_tool_timeout_seconds: float = Field(
         alias="VIBE_TRADING_TOOL_TIMEOUT_SECONDS", default=1800.0,
+    )
+    vibe_trading_llm_timeout_seconds: float = Field(
+        alias="VIBE_TRADING_LLM_TIMEOUT_SECONDS", default=300.0,
+    )
+    vibe_trading_run_stall_timeout_seconds: float = Field(
+        alias="VIBE_TRADING_RUN_STALL_TIMEOUT_SECONDS", default=1800.0,
     )
     vibe_trading_goal_max_continuations: int = Field(
         alias="VIBE_TRADING_GOAL_MAX_CONTINUATIONS", default=3,
@@ -400,6 +437,9 @@ class PathConfig(_EnvBase):
     vibe_goal_session_id: str = Field(alias="VIBE_GOAL_SESSION_ID", default="")
     vibe_trading_strategy_store_db_path: str = Field(
         alias="VIBE_TRADING_STRATEGY_STORE_DB_PATH", default="",
+    )
+    vibe_trading_strategy_discovery_db_path: str = Field(
+        alias="VIBE_TRADING_STRATEGY_DISCOVERY_DB_PATH", default="",
     )
 
 
