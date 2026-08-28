@@ -124,6 +124,13 @@ class TestEnvConfigDefaults:
         assert c.data.longbridge_app_key == ""
         assert c.data.longbridge_app_secret == ""
         assert c.data.longbridge_access_token == ""
+        # Per-market source-order overrides default to unset (default chains).
+        for market in (
+            "a_share", "us_equity", "hk_equity", "india_equity", "kr_equity",
+            "ca_equity", "vietnam_equity", "crypto", "futures", "fund",
+            "macro", "forex",
+        ):
+            assert getattr(c.data, f"market_data_order_{market}") == ""
 
     def test_api_defaults(self) -> None:
         c = EnvConfig()
