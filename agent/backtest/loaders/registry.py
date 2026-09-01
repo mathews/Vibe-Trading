@@ -57,6 +57,7 @@ VALID_SOURCES: set[str] = {
     "tickerall",
     "local",
     "auto",
+    "pgsql",
 }
 
 
@@ -111,8 +112,10 @@ def _ensure_registered() -> None:
         "backtest.loaders.mt5_loader",
         "backtest.loaders.tickerall_loader",
         "backtest.loaders.local_loader",
+        "backtest.loaders.pgsql_loader",
     ]
     import importlib
+
     for mod in _loader_modules:
         try:
             importlib.import_module(mod)
@@ -128,7 +131,9 @@ def _ensure_registered() -> None:
 # An explicit ``local`` request that is unavailable is a config problem the user
 # must see, not something to paper over with a Yahoo/Tencent fetch.
 # ``tickerall`` joins for the same reason (explicit-only, the user's own broker key).
-_NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local", "qveris", "tickerall"})  # QVERIS-INTEGRATION
+_NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset(
+    {"pgsql", "local", "qveris", "tickerall"}
+)  # QVERIS-INTEGRATION
 
 
 # ---------------------------------------------------------------------------
@@ -141,27 +146,61 @@ _NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local", "qveris", "ti
 # that must be politely throttled; Finnhub/AlphaVantage/Tiingo/FMP are key-gated
 # REST fallbacks placed deeper in the chain.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "a_share":   ["tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local"],
-    "us_equity": ["yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp", "finnhub", "alphavantage", "longbridge", "akshare", "local"],
+    "a_share": [
+        "tencent",
+        "mootdx",
+        "eastmoney",
+        "baostock",
+        "akshare",
+        "tushare",
+        "pgsql",
+        "local",
+    ],
+    "us_equity": [
+        "yahoo",
+        "stooq",
+        "sina",
+        "eastmoney",
+        "yfinance",
+        "tiingo",
+        "fmp",
+        "finnhub",
+        "alphavantage",
+        "longbridge",
+        "akshare",
+        "pgsql",
+        "local",
+    ],
     # HK: tencent leads (no observed IP ban); akshare (Eastmoney-backed)
     # precedes the Yahoo-SDK family, which is blocked from mainland IPs;
     # tushare hk_daily is key-gated.
-    "hk_equity": ["tencent", "eastmoney", "yahoo", "futu", "akshare", "yfinance", "tushare", "longbridge", "local"],
-    "india_equity": ["yahoo", "yfinance", "india_broker", "local"],
-    "kr_equity":   ["pykrx", "yahoo", "yfinance", "local"],
+    "hk_equity": [
+        "tencent",
+        "eastmoney",
+        "yahoo",
+        "futu",
+        "akshare",
+        "yfinance",
+        "tushare",
+        "longbridge",
+        "pgsql",
+        "local",
+    ],
+    "india_equity": ["yahoo", "yfinance", "india_broker", "pgsql", "local"],
+    "kr_equity": ["pykrx", "yahoo", "yfinance", "pgsql", "local"],
     # TSX (.TO) / TSX Venture (.V): direct Yahoo first, SDK fallback second.
-    "ca_equity":   ["yahoo", "yfinance", "local"],
+    "ca_equity": ["yahoo", "yfinance", "pgsql", "local"],
     # Vietnam (.VN): Yahoo lists HOSE only — HNX and UPCOM are unsupported,
     # so those two are reachable only through the user's local files.
-    "vietnam_equity": ["yahoo", "yfinance", "local"],
+    "vietnam_equity": ["yahoo", "yfinance", "pgsql", "local"],
     # OKX first (native), then dedicated Binance, then generic CCXT / Yahoo.
-    "crypto":    ["okx", "binance", "ccxt", "yfinance", "local"],
-    "futures":   ["tushare", "akshare", "local"],
-    "fund":      ["tushare", "akshare", "local"],
-    "macro":     ["akshare", "tushare", "local"],
+    "crypto": ["okx", "binance", "ccxt", "yfinance", "pgsql", "local"],
+    "futures": ["tushare", "akshare", "pgsql", "local"],
+    "fund": ["tushare", "akshare", "pgsql", "local"],
+    "macro": ["akshare", "tushare", "pgsql", "local"],
     # mt5 leads when a local MetaTrader 5 terminal is attached (Windows-only,
     # broker feed); otherwise it reports unavailable and the chain proceeds.
-    "forex":     ["mt5", "akshare", "yfinance", "local"],
+    "forex": ["mt5", "akshare", "yfinance", "pgsql", "local"],
 }
 
 
@@ -258,7 +297,9 @@ def refresh_source_order_overrides() -> None:
     from src.config.accessor import get_env_value
 
     snapshot = {
-        source_order_env_var(market): get_env_value(source_order_env_var(market), "")
+        source_order_env_var(market): get_env_value(
+            source_order_env_var(market), ""
+        )
         for market in _DEFAULT_CHAINS
     }
     if snapshot == _LAST_ORDER_ENV_SNAPSHOT:
@@ -276,7 +317,9 @@ def refresh_source_order_overrides() -> None:
             logger.warning(
                 "Ignoring invalid %s=%r: value must be a permutation of the"
                 " default chain %s; keeping default order",
-                source_order_env_var(market), raw, default,
+                source_order_env_var(market),
+                raw,
+                default,
             )
         FALLBACK_CHAINS[market] = default[:]
         _ACTIVE_SOURCE_ORDER_OVERRIDES.pop(market, None)
@@ -358,8 +401,8 @@ def get_loader_cls_with_fallback(source: str) -> Type[Any]:
     if source in _NO_NETWORK_FALLBACK_SOURCES:
         hint = {
             "local": "Check your Data Bridge config "
-                     "(~/.vibe-trading/data-bridge/config.yaml) — it must exist and "
-                     "list at least one source.",
+            "(~/.vibe-trading/data-bridge/config.yaml) — it must exist and "
+            "list at least one source.",
             "tickerall": "Set TICKERALL_API_KEY and TICKERALL_ACCOUNT_ID.",
         }.get(source, "")
         raise NoAvailableSourceError(
@@ -373,7 +416,9 @@ def get_loader_cls_with_fallback(source: str) -> Type[Any]:
             fallback = resolve_loader(market)
             logger.warning(
                 "%s is unavailable, falling back to %s for market %s",
-                source, fallback.name, market,
+                source,
+                fallback.name,
+                market,
             )
             return type(fallback)
         except NoAvailableSourceError:

@@ -30,10 +30,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
-from src.entities.cashflow import CashFlow, CashFlowSeries
 from src.entities.cashflow import normalize_kind
-from src.entities.models import normalize_date
-from src.entities.models import normalize_currency
+from src.entities.models import normalize_currency, normalize_date
+
+from .src.entities.cashflow import CashFlow, CashFlowSeries
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +49,32 @@ __all__ = [
 #: Canonical field -> the column names accepted for it without an explicit
 #: mapping. Matching is case-insensitive and ignores spaces and underscores.
 DEFAULT_COLUMN_ALIASES: Mapping[str, tuple[str, ...]] = {
-    "date": ("date", "asof", "asofdate", "transactiondate", "valuedate", "paymentdate"),
+    "date": (
+        "date",
+        "asof",
+        "asofdate",
+        "transactiondate",
+        "valuedate",
+        "paymentdate",
+    ),
     "amount": ("amount", "cashflow", "cash", "value", "net", "netamount"),
-    "kind": ("kind", "type", "cashflowtype", "transactiontype", "category", "flowtype"),
+    "kind": (
+        "kind",
+        "type",
+        "cashflowtype",
+        "transactiontype",
+        "category",
+        "flowtype",
+    ),
     "currency": ("currency", "ccy", "curr", "currencycode"),
 }
 
 #: Delimiter inferred from the file suffix when the caller does not name one.
-_DELIMITER_BY_SUFFIX: Mapping[str, str] = {".csv": ",", ".tsv": "\t", ".txt": ","}
+_DELIMITER_BY_SUFFIX: Mapping[str, str] = {
+    ".csv": ",",
+    ".tsv": "\t",
+    ".txt": ",",
+}
 
 #: Characters removed from a numeric field before parsing: whitespace (including
 #: the non-breaking space used by many exports), the Swiss group separator, and
@@ -82,7 +100,9 @@ def _canonical(name: str) -> str:
     Returns:
         Lower-cased header with spaces, underscores, and hyphens removed.
     """
-    return name.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    return (
+        name.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    )
 
 
 def _resolve_columns(
@@ -375,7 +395,10 @@ def load_cashflows(
             ``pre_translated`` was not set.
         ValueError: If ``decimal_separator`` is neither ``"."`` nor ``","``.
     """
-    if decimal_separator is not None and decimal_separator not in _DECIMAL_SEPARATORS:
+    if (
+        decimal_separator is not None
+        and decimal_separator not in _DECIMAL_SEPARATORS
+    ):
         raise ValueError(
             f"decimal_separator must be one of {_DECIMAL_SEPARATORS}, "
             f"got {decimal_separator!r}"
@@ -456,7 +479,9 @@ def load_cashflows(
             )
 
         metadata: dict[str, Any] = {
-            col: row[col] for col in extra_columns if (row.get(col) or "").strip()
+            col: row[col]
+            for col in extra_columns
+            if (row.get(col) or "").strip()
         }
         metadata["source_file"] = str(path)
         metadata["source_row"] = row_number
@@ -465,7 +490,10 @@ def load_cashflows(
             flows.append(
                 CashFlow(
                     date=_parse_date(
-                        row.get(resolved["date"], ""), date_format, path, row_number
+                        row.get(resolved["date"], ""),
+                        date_format,
+                        path,
+                        row_number,
                     ),
                     amount=amount,
                     kind=row_kind,
@@ -476,7 +504,9 @@ def load_cashflows(
         except CashFlowIngestError:
             raise
         except ValueError as exc:
-            raise CashFlowIngestError(f"{path} row {row_number}: {exc}") from exc
+            raise CashFlowIngestError(
+                f"{path} row {row_number}: {exc}"
+            ) from exc
 
     logger.info("loaded %d cash flows from %s", len(flows), path)
     return CashFlowSeries(
@@ -532,7 +562,11 @@ _PANEL_COLUMN_ALIASES: Mapping[str, tuple[str, ...]] = {
 }
 
 #: Layouts ``load_panel`` recognises; see its docstring for each shape.
-_PANEL_LAYOUTS: tuple[str, ...] = ("long", "wide_dates_rows", "wide_entities_rows")
+_PANEL_LAYOUTS: tuple[str, ...] = (
+    "long",
+    "wide_dates_rows",
+    "wide_entities_rows",
+)
 
 
 @dataclass(frozen=True)
@@ -579,7 +613,9 @@ class PanelObservation:
             ValueError: If ``date`` is unsupported or ``metadata`` is not a
                 mapping.
         """
-        entity = self.entity_id.strip() if isinstance(self.entity_id, str) else ""
+        entity = (
+            self.entity_id.strip() if isinstance(self.entity_id, str) else ""
+        )
         if not entity:
             raise PanelIngestError("entity_id is required and cannot be empty")
         object.__setattr__(self, "entity_id", entity)
@@ -589,7 +625,9 @@ class PanelObservation:
         try:
             value = float(self.value)
         except (TypeError, ValueError) as exc:
-            raise PanelIngestError(f"value must be numeric, got {self.value!r}") from exc
+            raise PanelIngestError(
+                f"value must be numeric, got {self.value!r}"
+            ) from exc
         if not math.isfinite(value):
             raise PanelIngestError(
                 f"value must be a finite number, got {self.value!r}; a missing "
@@ -597,7 +635,9 @@ class PanelObservation:
             )
         object.__setattr__(self, "value", value)
 
-        currency = self.currency.strip() if isinstance(self.currency, str) else ""
+        currency = (
+            self.currency.strip() if isinstance(self.currency, str) else ""
+        )
         if not currency:
             raise PanelIngestError("currency is required and cannot be empty")
         object.__setattr__(self, "currency", normalize_currency(currency))
@@ -611,7 +651,9 @@ class PanelObservation:
             raise ValueError(
                 f"metadata must be a mapping, got {type(self.metadata).__name__}"
             )
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        object.__setattr__(
+            self, "metadata", MappingProxyType(dict(self.metadata))
+        )
 
 
 @dataclass(frozen=True)
@@ -769,7 +811,9 @@ def _looks_like_date(text: str, date_format: str | None) -> bool:
         return False
 
 
-def _infer_panel_layout(header: Sequence[str], date_format: str | None, path: Path) -> str:
+def _infer_panel_layout(
+    header: Sequence[str], date_format: str | None, path: Path
+) -> str:
     """Infer a panel file's layout from its header, or raise if ambiguous.
 
     A header naming entity/date/metric/value columns is read as ``"long"``.
@@ -812,7 +856,9 @@ def _infer_panel_layout(header: Sequence[str], date_format: str | None, path: Pa
     rest = list(header[1:])
     first_is_date_like = first in date_aliases
     first_is_entity_like = first in entity_aliases
-    rest_are_dates = bool(rest) and all(_looks_like_date(col, date_format) for col in rest)
+    rest_are_dates = bool(rest) and all(
+        _looks_like_date(col, date_format) for col in rest
+    )
 
     if first_is_date_like and rest and not rest_are_dates and not has_metric:
         return "wide_dates_rows"
@@ -1019,7 +1065,9 @@ def _load_panel_long(
         )
 
         metadata: dict[str, Any] = {
-            col: row[col] for col in extra_columns if (row.get(col) or "").strip()
+            col: row[col]
+            for col in extra_columns
+            if (row.get(col) or "").strip()
         }
         metadata["source_file"] = str(path)
         metadata["source_row"] = row_number
@@ -1029,7 +1077,10 @@ def _load_panel_long(
                 PanelObservation(
                     entity_id=row_entity,
                     date=_parse_panel_date(
-                        row.get(resolved["date"], ""), date_format, path, row_number
+                        row.get(resolved["date"], ""),
+                        date_format,
+                        path,
+                        row_number,
                     ),
                     metric=row_metric,
                     value=value,
@@ -1043,7 +1094,11 @@ def _load_panel_long(
         except ValueError as exc:
             raise PanelIngestError(f"{path} row {row_number}: {exc}") from exc
 
-    logger.info("loaded %d panel observations from %s (layout=long)", len(observations), path)
+    logger.info(
+        "loaded %d panel observations from %s (layout=long)",
+        len(observations),
+        path,
+    )
     return EntityPanel(observations=tuple(observations))
 
 
@@ -1136,7 +1191,9 @@ def _load_panel_wide(
 
         row_label_raw = (row.get(row_label_column) or "").strip()
         if not row_label_raw:
-            raise PanelIngestError(f"{path} row {row_number}: {row_label_column!r} is blank")
+            raise PanelIngestError(
+                f"{path} row {row_number}: {row_label_column!r} is blank"
+            )
 
         row_date = (
             _parse_panel_date(row_label_raw, date_format, path, row_number)
@@ -1150,9 +1207,19 @@ def _load_panel_wide(
             if not (raw_value or "").strip():
                 continue  # hole in the grid: no observation, not zero
 
-            value = _parse_panel_amount(raw_value, path, row_number, decimal_separator)
-            entity_id = column_name.strip() if layout == "wide_dates_rows" else row_entity
-            obs_date = row_date if layout == "wide_dates_rows" else column_dates[column_name]
+            value = _parse_panel_amount(
+                raw_value, path, row_number, decimal_separator
+            )
+            entity_id = (
+                column_name.strip()
+                if layout == "wide_dates_rows"
+                else row_entity
+            )
+            obs_date = (
+                row_date
+                if layout == "wide_dates_rows"
+                else column_dates[column_name]
+            )
 
             metadata = {"source_file": str(path), "source_row": row_number}
             try:
@@ -1170,10 +1237,15 @@ def _load_panel_wide(
             except PanelIngestError:
                 raise
             except ValueError as exc:
-                raise PanelIngestError(f"{path} row {row_number}: {exc}") from exc
+                raise PanelIngestError(
+                    f"{path} row {row_number}: {exc}"
+                ) from exc
 
     logger.info(
-        "loaded %d panel observations from %s (layout=%s)", len(observations), path, layout
+        "loaded %d panel observations from %s (layout=%s)",
+        len(observations),
+        path,
+        layout,
     )
     return EntityPanel(observations=tuple(observations))
 
@@ -1264,13 +1336,18 @@ def load_panel(
             parse.
         ValueError: If ``decimal_separator`` is neither ``"."`` nor ``","``.
     """
-    if decimal_separator is not None and decimal_separator not in _DECIMAL_SEPARATORS:
+    if (
+        decimal_separator is not None
+        and decimal_separator not in _DECIMAL_SEPARATORS
+    ):
         raise ValueError(
             f"decimal_separator must be one of {_DECIMAL_SEPARATORS}, "
             f"got {decimal_separator!r}"
         )
     if layout is not None and layout not in _PANEL_LAYOUTS:
-        raise PanelIngestError(f"layout must be one of {_PANEL_LAYOUTS}, got {layout!r}")
+        raise PanelIngestError(
+            f"layout must be one of {_PANEL_LAYOUTS}, got {layout!r}"
+        )
 
     path = Path(path).expanduser()
     try:

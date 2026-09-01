@@ -35,7 +35,13 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 
 from src.factors.base import Alpha
 
@@ -63,7 +69,15 @@ _PRICE_COLS = {"open", "high", "low", "close", "volume", "vwap", "amount"}
 
 PanelColumn = str
 
-Universe = Literal["equity_us", "equity_cn", "equity_hk", "equity_in", "equity_kr", "crypto", "futures"]
+Universe = Literal[
+    "equity_us",
+    "equity_cn",
+    "equity_hk",
+    "equity_in",
+    "equity_kr",
+    "crypto",
+    "futures",
+]
 
 
 def validate_columns_required(cols: list[str]) -> None:
@@ -141,7 +155,9 @@ class _LoadError:
 
 def _validate_id_token(token: str, kind: str) -> None:
     if not _ID_RE.fullmatch(token):
-        raise RegistryError(f"invalid {kind} {token!r}: must match {_ID_RE.pattern}")
+        raise RegistryError(
+            f"invalid {kind} {token!r}: must match {_ID_RE.pattern}"
+        )
 
 
 def load_alpha_meta_from_py(path: Path) -> AlphaMeta:
@@ -152,7 +168,9 @@ def load_alpha_meta_from_py(path: Path) -> AlphaMeta:
     """
     size = path.stat().st_size
     if size > _MAX_PY_BYTES:
-        raise RegistryError(f"{path.name}: {size}B exceeds {_MAX_PY_BYTES}B cap")
+        raise RegistryError(
+            f"{path.name}: {size}B exceeds {_MAX_PY_BYTES}B cap"
+        )
 
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
@@ -172,24 +190,32 @@ def load_alpha_meta_from_py(path: Path) -> AlphaMeta:
     try:
         raw = ast.literal_eval(meta_node)
     except (ValueError, SyntaxError) as exc:
-        raise RegistryError(f"{path.name}: __alpha_meta__ not a literal: {exc}") from exc
+        raise RegistryError(
+            f"{path.name}: __alpha_meta__ not a literal: {exc}"
+        ) from exc
 
     if not isinstance(raw, dict):
-        raise RegistryError(f"{path.name}: __alpha_meta__ must be dict, got {type(raw).__name__}")
+        raise RegistryError(
+            f"{path.name}: __alpha_meta__ must be dict, got {type(raw).__name__}"
+        )
 
     try:
         return AlphaMeta(**raw)
     except ValidationError as exc:
-        raise RegistryError(f"{path.name}: AlphaMeta validation failed: {exc}") from exc
+        raise RegistryError(
+            f"{path.name}: AlphaMeta validation failed: {exc}"
+        ) from exc
 
 
-def _safe_yaml_load(path: Path) -> Any:
+def _safe_yaml_load(path: Path) -> Any:  # pyright: ignore[reportUnusedFunction]
     """yaml.safe_load with hard 5 MB size cap (defence in depth)."""
     import yaml  # local import keeps registry import-light
 
     size = path.stat().st_size
     if size > _MAX_YAML_BYTES:
-        raise RegistryError(f"{path.name}: {size}B exceeds {_MAX_YAML_BYTES}B YAML cap")
+        raise RegistryError(
+            f"{path.name}: {size}B exceeds {_MAX_YAML_BYTES}B YAML cap"
+        )
     text = path.read_text(encoding="utf-8")
     return yaml.safe_load(text)
 
@@ -240,19 +266,28 @@ class Registry:
         try:
             _validate_id_token(short_id, "alpha_id_short")
         except RegistryError as exc:
-            self._load_errors.append(_LoadError(f"{zoo_id}.{short_id}", str(exc)))
+            self._load_errors.append(
+                _LoadError(f"{zoo_id}.{short_id}", str(exc))
+            )
             return
 
         try:
             meta = load_alpha_meta_from_py(py_file)
         except RegistryError as exc:
-            self._load_errors.append(_LoadError(f"{zoo_id}.{short_id}", str(exc)))
+            self._load_errors.append(
+                _LoadError(f"{zoo_id}.{short_id}", str(exc))
+            )
             return
 
         # Cross-check: filename matches alpha id (defence vs typos)
         # id is "<zoo>_<short>" by convention; not strictly required but flagged.
         module_path = f"src.factors.zoo.{zoo_id}.{short_id}"
-        alpha = Alpha(id=meta.id, zoo=zoo_id, module_path=module_path, meta=meta.model_dump())
+        alpha = Alpha(
+            id=meta.id,
+            zoo=zoo_id,
+            module_path=module_path,
+            meta=meta.model_dump(),
+        )
         if alpha.id in self._alphas:
             self._load_errors.append(_LoadError(alpha.id, "duplicate alpha id"))
             return
@@ -274,7 +309,9 @@ class Registry:
                 continue
             if theme is not None and theme not in a.meta.get("theme", []):
                 continue
-            if universe is not None and universe not in a.meta.get("universe", []):
+            if universe is not None and universe not in a.meta.get(
+                "universe", []
+            ):
                 continue
             out.append(a.id)
         return sorted(out)
@@ -299,7 +336,9 @@ class Registry:
         try:
             size = py_path.stat().st_size
         except OSError as exc:
-            raise RegistryError(f"{alpha_id}: cannot stat source: {exc}") from exc
+            raise RegistryError(
+                f"{alpha_id}: cannot stat source: {exc}"
+            ) from exc
         if size > _MAX_PY_BYTES:
             raise RegistryError(
                 f"{alpha_id}: source {size}B exceeds {_MAX_PY_BYTES}B cap"
@@ -307,18 +346,23 @@ class Registry:
         try:
             return py_path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise RegistryError(f"{alpha_id}: cannot read source: {exc}") from exc
+            raise RegistryError(
+                f"{alpha_id}: cannot read source: {exc}"
+            ) from exc
 
     def health(self) -> dict[str, Any]:
         return {
             "loaded": len(self._alphas),
             "failed": len(self._load_errors),
             "errors": [
-                {"alpha_id": e.alpha_id, "reason": e.reason} for e in self._load_errors
+                {"alpha_id": e.alpha_id, "reason": e.reason}
+                for e in self._load_errors
             ],
         }
 
-    def compute(self, alpha_id: str, panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    def compute(
+        self, alpha_id: str, panel: dict[str, pd.DataFrame]
+    ) -> pd.DataFrame:
         """Lazy-import the alpha module and run its ``compute(panel)``.
 
         Raises:
@@ -329,10 +373,16 @@ class Registry:
         alpha = self.get(alpha_id)
         meta = alpha.meta
 
-        missing = [c for c in meta.get("columns_required", []) if c not in panel]
+        missing = [
+            c for c in meta.get("columns_required", []) if c not in panel
+        ]
         if missing:
-            raise SkipAlpha(f"{alpha_id}: panel missing required columns {missing}")
-        missing_extra = [c for c in meta.get("extras_required", []) if c not in panel]
+            raise SkipAlpha(
+                f"{alpha_id}: panel missing required columns {missing}"
+            )
+        missing_extra = [
+            c for c in meta.get("extras_required", []) if c not in panel
+        ]
         if missing_extra:
             raise SkipAlpha(f"{alpha_id}: panel missing extras {missing_extra}")
         if meta.get("requires_sector") and "sector" not in panel:
@@ -359,11 +409,17 @@ class Registry:
             return importlib.import_module(alpha.module_path)
         py_file = self._py_paths[alpha.id]
         cached = sys.modules.get(alpha.module_path)
-        if cached is not None and getattr(cached, "__file__", None) == str(py_file):
+        if cached is not None and getattr(cached, "__file__", None) == str(
+            py_file
+        ):
             return cached
-        spec = importlib.util.spec_from_file_location(alpha.module_path, py_file)
+        spec = importlib.util.spec_from_file_location(
+            alpha.module_path, py_file
+        )
         if spec is None or spec.loader is None:
-            raise RegistryError(f"{alpha.id}: could not build import spec for {py_file}")
+            raise RegistryError(
+                f"{alpha.id}: could not build import spec for {py_file}"
+            )
         module = importlib.util.module_from_spec(spec)
         sys.modules[alpha.module_path] = module
         try:
@@ -393,7 +449,9 @@ class Registry:
             raise RegistryError(f"{alpha_id}: output contains +/- inf")
         nan_ratio = float(np.isnan(arr).mean()) if arr.size > 0 else 1.0
         if nan_ratio > 0.95:
-            raise RegistryError(f"{alpha_id}: output >95% NaN (nan_ratio={nan_ratio:.3f})")
+            raise RegistryError(
+                f"{alpha_id}: output >95% NaN (nan_ratio={nan_ratio:.3f})"
+            )
         return result
 
     def export_manifest(self) -> dict[str, Any]:
@@ -412,7 +470,10 @@ class Registry:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "zoos": [
-                {"zoo_id": zoo_id, "alphas": sorted(items, key=lambda x: x["id"])}
+                {
+                    "zoo_id": zoo_id,
+                    "alphas": sorted(items, key=lambda x: x["id"]),
+                }
                 for zoo_id, items in sorted(zoos.items())
             ],
             "health": self.health(),
