@@ -239,3 +239,101 @@ class TestOptionsEngineHonoursTheBoundary:
 
         after_warmup = self._run(tmp_path / "b", {"warmup_bars": 3}) / "trades.csv"
         assert pd.read_csv(after_warmup).empty
+
+
+class TestExplicitBenchmarkIsMeasuredOverTheEvaluatedWindow:
+    """The explicit-benchmark path measured the benchmark over the FETCHED window.
+
+    ``resolve_benchmark`` fetches ``start_date``..``end_date`` and reports the
+    buy-and-hold return over all of it. The per-bar ``ret_series`` was reindexed
+    onto the clipped evaluation dates, but ``benchmark_return`` — and therefore
+    the ``excess_return`` derived from it — kept the full-window number. A run
+    that declared a warm-up then compared its own short-window total_return
+    against a benchmark measured over the longer window: the same
+    mismatched-window error #1240 exists to prevent, surviving inside the fix
+    for it. Only ``benchmark="auto"`` (the mean of the already-clipped return
+    frame) was correct.
+    """
+
+    boundary = 60
+
+    @staticmethod
+    def _frame(n=260):
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        # Strategy prices: a clean uptrend so the run trades and is gradeable.
+        price = pd.Series(np.linspace(100.0, 160.0, n), index=idx)
+        return pd.DataFrame(
+            {
+                "open": price,
+                "high": price * 1.001,
+                "low": price * 0.999,
+                "close": price,
+                "volume": 1_000.0,
+            },
+            index=idx,
+        )
+
+    def _run(self, tmp_path, extra, bench_close):
+        from backtest import benchmark as bench_mod
+        from backtest.benchmark import BenchmarkResult
+        from backtest.metrics import bar_returns, buy_and_hold_return
+
+        frame = self._frame()
+        engine = _Engine({"initial_cash": 100_000.0})
+        result = BenchmarkResult(
+            ticker="SPY",
+            ret_series=bar_returns(bench_close, label="bench"),
+            total_ret=buy_and_hold_return(bench_close),
+            close=bench_close,
+        )
+        original = bench_mod.resolve_benchmark
+        bench_mod.resolve_benchmark = lambda **kwargs: result
+        try:
+            metrics = engine.run_backtest(
+                {
+                    "codes": ["AAA"],
+                    "start_date": str(frame.index[0].date()),
+                    "end_date": str(frame.index[-1].date()),
+                    "benchmark": "SPY",
+                    **extra,
+                },
+                _Loader({"AAA": frame}),
+                _MovingAverageCross(30),
+                tmp_path,
+            )
+        finally:
+            bench_mod.resolve_benchmark = original
+        return metrics, frame
+
+    def test_benchmark_return_excludes_the_warmup_window(self, tmp_path):
+        frame = self._frame()
+        # The benchmark doubles inside the warm-up and is flat afterwards, so
+        # the full-window and evaluated-window numbers cannot be confused.
+        bench = pd.Series(100.0, index=frame.index)
+        bench.iloc[: self.boundary] = np.linspace(100.0, 200.0, self.boundary)
+        bench.iloc[self.boundary :] = 200.0
+
+        graded_all, _ = self._run(tmp_path / "a", {}, bench)
+        graded_after, _ = self._run(
+            tmp_path / "b", {"warmup_bars": self.boundary}, bench
+        )
+
+        # Full window: 100 -> 200 = +100%.
+        assert graded_all["benchmark_return"] == pytest.approx(1.0, abs=1e-6)
+        # Evaluated window: the benchmark is flat at 200 throughout = 0%.
+        assert graded_after["benchmark_return"] == pytest.approx(0.0, abs=1e-6)
+
+    def test_excess_return_uses_the_same_window_as_total_return(self, tmp_path):
+        frame = self._frame()
+        bench = pd.Series(100.0, index=frame.index)
+        bench.iloc[: self.boundary] = np.linspace(100.0, 200.0, self.boundary)
+        bench.iloc[self.boundary :] = 200.0
+
+        metrics, _ = self._run(tmp_path, {"warmup_bars": self.boundary}, bench)
+
+        assert metrics["excess_return"] == pytest.approx(
+            round(metrics["total_return"] - metrics["benchmark_return"], 6), abs=1e-6
+        )
+        # And the strategy's own window really is the short one, or the
+        # assertion above would hold trivially for the full window too.
+        assert metrics["benchmark_return"] == pytest.approx(0.0, abs=1e-6)

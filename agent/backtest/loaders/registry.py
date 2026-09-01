@@ -221,9 +221,7 @@ _SOURCE_ORDER_ENV_PREFIX = "MARKET_DATA_ORDER_"
 # Snapshot of the chains as written above. refresh_source_order_overrides()
 # restores from here; entries must never leak into FALLBACK_CHAINS by
 # aliasing (always copy on restore), or a restore would mutate the snapshot.
-_DEFAULT_CHAINS: dict[str, list[str]] = {
-    market: chain[:] for market, chain in FALLBACK_CHAINS.items()
-}
+_DEFAULT_CHAINS: dict[str, list[str]] = {market: chain[:] for market, chain in FALLBACK_CHAINS.items()}
 
 # market -> override currently in effect. Populated only by
 # refresh_source_order_overrides(); absent key = default chain in effect.
@@ -297,10 +295,7 @@ def refresh_source_order_overrides() -> None:
     from src.config.accessor import get_env_value
 
     snapshot = {
-        source_order_env_var(market): get_env_value(
-            source_order_env_var(market), ""
-        )
-        for market in _DEFAULT_CHAINS
+        source_order_env_var(market): get_env_value(source_order_env_var(market), "") for market in _DEFAULT_CHAINS
     }
     if snapshot == _LAST_ORDER_ENV_SNAPSHOT:
         return
@@ -315,8 +310,7 @@ def refresh_source_order_overrides() -> None:
             continue
         if order:  # non-empty but invalid — warn, keep default order
             logger.warning(
-                "Ignoring invalid %s=%r: value must be a permutation of the"
-                " default chain %s; keeping default order",
+                "Ignoring invalid %s=%r: value must be a permutation of the default chain %s; keeping default order",
                 source_order_env_var(market),
                 raw,
                 default,
@@ -363,8 +357,7 @@ def resolve_loader(market: str) -> Any:
         if loader.is_available():
             return loader
     raise NoAvailableSourceError(
-        f"No available data source for market '{market}'. "
-        f"Tried: {tried or chain}. Check network and API token config."
+        f"No available data source for market '{market}'. Tried: {tried or chain}. Check network and API token config."
     )
 
 
@@ -406,8 +399,7 @@ def get_loader_cls_with_fallback(source: str) -> Type[Any]:
             "tickerall": "Set TICKERALL_API_KEY and TICKERALL_ACCOUNT_ID.",
         }.get(source, "")
         raise NoAvailableSourceError(
-            f"Data source '{source}' is unavailable and does not fall back to a "
-            f"network source. {hint}".rstrip()
+            f"Data source '{source}' is unavailable and does not fall back to a network source. {hint}".rstrip()
         )
 
     # Source unavailable — try same-market fallback
@@ -424,6 +416,4 @@ def get_loader_cls_with_fallback(source: str) -> Type[Any]:
         except NoAvailableSourceError:
             continue
 
-    raise NoAvailableSourceError(
-        f"Data source '{source}' is unavailable and no fallback found."
-    )
+    raise NoAvailableSourceError(f"Data source '{source}' is unavailable and no fallback found.")

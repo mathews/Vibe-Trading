@@ -2,11 +2,12 @@
 resolves through the ``read_file`` tool.
 
 Background:
-    ``read_file`` roots reads at the bundled ``skills/`` directory, so a link
-    must carry the skill-name prefix (e.g. ``tushare/references/...``) to be
-    reachable. Bare ``references/...`` links silently fail because
-    ``skills/references/`` does not exist. These tests lock in the prefixed
-    convention so the bug cannot regress.
+    ``read_file`` roots reads at the bundled ``skills/`` directory. The
+    skill-name prefix (e.g. ``tushare/references/...``) is what these files are
+    written with, and these tests lock that convention in. A bare
+    ``references/...`` is now resolved against the skill that owns it as well,
+    so the form a human follows on GitHub reaches the same file — see
+    ``test_read_file_skill_relative.py`` for that resolution path.
 
 No live API is touched: ``read_file`` performs local filesystem reads of the
 bundled skill docs only.
@@ -121,8 +122,9 @@ def test_every_skill_with_reference_links_is_covered() -> None:
 def test_reference_links_carry_skill_prefix(skill: str, link: str) -> None:
     """Every references/ or scripts/ link is written with its skill-name prefix.
 
-    A bare ``references/...`` / ``scripts/...`` link is unreachable because
-    read_file roots at ``skills/`` and ``skills/references/`` does not exist.
+    The prefixed form names one file outright. The bare form now resolves too,
+    but by searching the skills tree, which a future same-named reference in a
+    second skill would make ambiguous — so this is still the form to write.
     """
     assert link.startswith(f"{skill}/"), (
         f"{skill}/SKILL.md link must carry the '{skill}/' prefix, got: {link}"
@@ -137,12 +139,14 @@ def test_reference_links_resolve_through_read_file(skill: str, link: str) -> Non
     assert body["content"], f"{link} resolved to empty content"
 
 
-def test_bare_reference_link_would_fail() -> None:
-    """Guard: a bare references/ path (no prefix) is NOT resolvable.
+def test_bare_reference_link_resolves_to_the_same_file() -> None:
+    """A bare references/ path (no prefix) reaches the same document.
 
-    This documents the exact failure mode the prefix convention prevents.
+    This is the form GitHub resolves for a human reading the SKILL.md, so both
+    consumers of the link have to land on one file.
     """
     skill, link = _all_links()[0]
     bare = link[len(f"{skill}/"):]  # strip the skill-name prefix
     body = _read(bare)
-    assert body["status"] == "error"
+    assert body["status"] == "ok", f"{bare} did not resolve: {body}"
+    assert body["path"] == _read(link)["path"]
