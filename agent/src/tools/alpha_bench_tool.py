@@ -129,7 +129,9 @@ def _load_universe_panel(
     if use_cache and cache_path.is_file():
         cached = _read_pickle_cache(cache_path)
         if cached is not None:
-            logger.info("universe %s: loaded from cache %s", universe, cache_path)
+            logger.info(
+                "universe %s: loaded from cache %s", universe, cache_path
+            )
             return cached
 
     if universe == "csi300":
@@ -241,7 +243,9 @@ def _read_pickle_cache(cache_path: Path) -> dict[str, pd.DataFrame] | None:
     if not _hashes_equal(expected, actual):
         logger.warning(
             "cache integrity mismatch for %s (expected %s..., got %s...); refetching",
-            cache_path.name, expected[:12], actual[:12],
+            cache_path.name,
+            expected[:12],
+            actual[:12],
         )
         return None
 
@@ -251,7 +255,9 @@ def _read_pickle_cache(cache_path: Path) -> dict[str, pd.DataFrame] | None:
         logger.warning("cache unpickle failed (%s); refetching", exc)
         return None
     if not isinstance(cached, dict) or "close" not in cached:
-        logger.warning("cache %s has unexpected shape; refetching", cache_path.name)
+        logger.warning(
+            "cache %s has unexpected shape; refetching", cache_path.name
+        )
         return None
     return cached
 
@@ -286,23 +292,91 @@ def _hashes_equal(a: str, b: str) -> bool:
 _CSI300_FALLBACK_CODES = [
     # Blue-chip A-share representatives — used only when index_weight fails.
     # Hand-picked across sectors so a degraded run still gives diverse signal.
-    "600519.SH", "601318.SH", "600036.SH", "000333.SZ", "000858.SZ",
-    "601166.SH", "600276.SH", "601398.SH", "601288.SH", "600030.SH",
-    "600887.SH", "601012.SH", "601888.SH", "000651.SZ", "600028.SH",
-    "601628.SH", "600000.SH", "601088.SH", "601857.SH", "600009.SH",
-    "601899.SH", "002594.SZ", "600585.SH", "300750.SZ", "601658.SH",
-    "600048.SH", "601138.SH", "601668.SH", "000001.SZ", "000002.SZ",
+    "600519.SH",
+    "601318.SH",
+    "600036.SH",
+    "000333.SZ",
+    "000858.SZ",
+    "601166.SH",
+    "600276.SH",
+    "601398.SH",
+    "601288.SH",
+    "600030.SH",
+    "600887.SH",
+    "601012.SH",
+    "601888.SH",
+    "000651.SZ",
+    "600028.SH",
+    "601628.SH",
+    "600000.SH",
+    "601088.SH",
+    "601857.SH",
+    "600009.SH",
+    "601899.SH",
+    "002594.SZ",
+    "600585.SH",
+    "300750.SZ",
+    "601658.SH",
+    "600048.SH",
+    "601138.SH",
+    "601668.SH",
+    "000001.SZ",
+    "000002.SZ",
 ]
 
 
 # Hand-picked US large-cap representatives. Used when Wikipedia fetch fails.
 _SP500_FALLBACK_CODES = [
-    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "BRK-B",
-    "JPM", "JNJ", "V", "PG", "UNH", "MA", "HD", "XOM", "LLY", "MRK",
-    "PEP", "KO", "ABBV", "AVGO", "CVX", "WMT", "COST", "ADBE", "MCD",
-    "CRM", "ACN", "BAC", "TMO", "ORCL", "CSCO", "ABT", "WFC", "DHR",
-    "VZ", "PFE", "INTC", "DIS", "CMCSA", "AMD", "TXN", "PM", "QCOM",
-    "NEE", "RTX", "HON", "T", "IBM",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "TSLA",
+    "BRK-B",
+    "JPM",
+    "JNJ",
+    "V",
+    "PG",
+    "UNH",
+    "MA",
+    "HD",
+    "XOM",
+    "LLY",
+    "MRK",
+    "PEP",
+    "KO",
+    "ABBV",
+    "AVGO",
+    "CVX",
+    "WMT",
+    "COST",
+    "ADBE",
+    "MCD",
+    "CRM",
+    "ACN",
+    "BAC",
+    "TMO",
+    "ORCL",
+    "CSCO",
+    "ABT",
+    "WFC",
+    "DHR",
+    "VZ",
+    "PFE",
+    "INTC",
+    "DIS",
+    "CMCSA",
+    "AMD",
+    "TXN",
+    "PM",
+    "QCOM",
+    "NEE",
+    "RTX",
+    "HON",
+    "T",
+    "IBM",
 ]
 
 
@@ -335,13 +409,17 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     try:
         # Reach back before ``start`` so the snapshot that was in force on the
         # first requested day is included; Tushare publishes month-end rosters.
-        lookback = (pd.Timestamp(start) - pd.Timedelta(days=60)).strftime("%Y%m%d")
+        lookback = (pd.Timestamp(start) - pd.Timedelta(days=60)).strftime(
+            "%Y%m%d"
+        )
         weights = pro.index_weight(
             index_code="399300.SZ", start_date=lookback, end_date=ed
         )
         if weights is not None and not weights.empty:
             frame = weights.copy()
-            frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
+            frame["trade_date"] = pd.to_datetime(
+                frame["trade_date"], errors="coerce"
+            )
             frame = frame.dropna(subset=["trade_date", "con_code"])
             constituent_source_date = str(weights["trade_date"].max())
             # Every name that was a member at any point in the window, so the
@@ -364,13 +442,17 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
                 len(membership),
             )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("csi300 index_weight failed (%s); using fallback list", exc)
+        logger.warning(
+            "csi300 index_weight failed (%s); using fallback list", exc
+        )
 
     if not codes:
         codes = list(_CSI300_FALLBACK_CODES)
         constituent_source = "hand-picked fallback"
         constituent_source_date = None
-        logger.warning("csi300: using %d-name fallback (degraded run)", len(codes))
+        logger.warning(
+            "csi300: using %d-name fallback (degraded run)", len(codes)
+        )
 
     # Fetch raw daily in parallel — we need ``amount`` which the standard
     # loader drops. Tushare's free tier permits ~200 calls/min so 4 concurrent
@@ -386,9 +468,15 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
         for col in ("open", "high", "low", "close", "volume", "amount"):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-        keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in df.columns]
+        keep = [
+            c
+            for c in ("open", "high", "low", "close", "volume", "amount")
+            if c in df.columns
+        ]
         df = df[keep].dropna(subset=["open", "high", "low", "close"])
-        factor = _retry(lambda: pro.adj_factor(ts_code=code, start_date=sd, end_date=ed))
+        factor = _retry(
+            lambda: pro.adj_factor(ts_code=code, start_date=sd, end_date=ed)
+        )
         return code, _apply_qfq(df, factor)
 
     fetched: dict[str, pd.DataFrame] = {}
@@ -487,7 +575,9 @@ def _load_sp500_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
         sectors = {}
         constituent_source = "hand-picked fallback"
         constituent_source_date = None
-        logger.warning("sp500: using %d-name fallback (degraded run)", len(codes))
+        logger.warning(
+            "sp500: using %d-name fallback (degraded run)", len(codes)
+        )
 
     logger.warning(
         "SP500 universe uses current constituents (%s @ %s) → survivorship-biased",
@@ -505,7 +595,9 @@ def _load_sp500_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     panel = _wide_from_fetched(fetched, include_amount=False)
     # Synthetic vwap for alpha101 alphas that require it on US universe
     if all(k in panel for k in ("open", "high", "low", "close")):
-        panel["vwap"] = (panel["open"] + panel["high"] + panel["low"] + panel["close"]) / 4.0
+        panel["vwap"] = (
+            panel["open"] + panel["high"] + panel["low"] + panel["close"]
+        ) / 4.0
 
     # 19 alpha101 alphas are industry-neutralized and the registry refuses them
     # outright when the panel carries no ``sector`` tag, so the bench reported
@@ -514,14 +606,18 @@ def _load_sp500_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     sector_coverage = 0.0
     if sectors and "close" in panel and not panel["close"].empty:
         columns = panel["close"].columns
-        labels = [sectors.get(str(code).removesuffix(".US"), "") for code in columns]
+        labels = [
+            sectors.get(str(code).removesuffix(".US"), "") for code in columns
+        ]
         sector_coverage = sum(1 for label in labels if label) / len(labels)
         # A mostly-unlabelled panel would demean one big "unknown" bucket, which
         # is the global-demean fallback wearing a sector tag. Say so instead.
         if sector_coverage >= _SP500_MIN_SECTOR_COVERAGE:
             panel["sector"] = pd.DataFrame(
                 np.repeat(
-                    np.array([label or "UNKNOWN" for label in labels], dtype=object)[None, :],
+                    np.array(
+                        [label or "UNKNOWN" for label in labels], dtype=object
+                    )[None, :],
                     len(panel["close"].index),
                     axis=0,
                 ),
@@ -579,7 +675,12 @@ def _fetch_sp500_constituents() -> tuple[list[str], dict[str, str]]:
         for tbl in tables:
             if "Symbol" in tbl.columns:
                 # yfinance prefers ``BRK-B`` over ``BRK.B`` — normalise
-                symbols = tbl["Symbol"].astype(str).str.strip().str.replace(".", "-", regex=False)
+                symbols = (
+                    tbl["Symbol"]
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(".", "-", regex=False)
+                )
                 keep = symbols.ne("") & symbols.ne("nan")
                 tickers = symbols[keep].tolist()
                 sectors: dict[str, str] = {}
@@ -609,7 +710,9 @@ def _load_btc_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     fetched = _retry(lambda: loader.fetch(["BTC-USDT"], start, end)) or {}
     panel = _wide_from_fetched(fetched, include_amount=False)
     if all(k in panel for k in ("open", "high", "low", "close")):
-        panel["vwap"] = (panel["open"] + panel["high"] + panel["low"] + panel["close"]) / 4.0
+        panel["vwap"] = (
+            panel["open"] + panel["high"] + panel["low"] + panel["close"]
+        ) / 4.0
     return panel
 
 
@@ -631,7 +734,9 @@ def _wide_from_fetched(
     panel: dict[str, pd.DataFrame] = {}
     for field in fields:
         present = {
-            code: df[field] for code, df in fetched.items() if field in df.columns
+            code: df[field]
+            for code, df in fetched.items()
+            if field in df.columns
         }
         if not present:
             continue
@@ -655,8 +760,10 @@ def _retry(fn, *, tries: int = 3, base_delay: float = 1.0):
             last_exc = exc
             if attempt == tries - 1:
                 break
-            delay = base_delay * (2 ** attempt)
-            logger.debug("retry %d/%d after %.1fs: %s", attempt + 1, tries, delay, exc)
+            delay = base_delay * (2**attempt)
+            logger.debug(
+                "retry %d/%d after %.1fs: %s", attempt + 1, tries, delay, exc
+            )
             time.sleep(delay)
     if last_exc is not None:
         logger.warning("retry exhausted: %s", last_exc)
@@ -672,7 +779,9 @@ def _compute_forward_returns(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Next-bar forward simple returns from close, aligned to factor timestamp."""
     close = panel.get("close")
     if close is None:
-        raise ValueError("panel missing 'close' — cannot derive forward returns")
+        raise ValueError(
+            "panel missing 'close' — cannot derive forward returns"
+        )
     # Next-period return aligned to current row (use t+1 close, shift back).
     fwd = close.pct_change(fill_method=None).shift(-1)
     return fwd
@@ -685,7 +794,9 @@ def _bench_one_alpha(
     return_df: pd.DataFrame,
 ) -> dict[str, Any]:
     """Compute IC stats for one alpha. Returns a dict, may raise SkipAlpha / RegistryError."""
-    from src.factors.factor_analysis_core import compute_ic_series  # local import
+    from src.factors.factor_analysis_core import (
+        compute_ic_series,  # local import
+    )
 
     factor_df = registry.compute(alpha_id, panel)
     ic_series = compute_ic_series(factor_df, return_df)
@@ -730,7 +841,7 @@ def _select_alpha_ids(
 # ---------------------------------------------------------------------------
 
 _CSP = (
-    "<meta http-equiv=\"Content-Security-Policy\" "
+    '<meta http-equiv="Content-Security-Policy" '
     "content=\"default-src 'none'; style-src 'unsafe-inline'; script-src 'none'\">"
 )
 
@@ -848,11 +959,11 @@ def _esc(value: Any) -> str:
 def _render_html_manual(ctx: dict[str, Any]) -> str:
     """Hand-rolled fallback. Every interpolated value goes through html.escape."""
     parts: list[str] = [
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">',
         _CSP,
         f"<title>Alpha Bench Report</title><style>{_REPORT_CSS}</style></head><body>",
         "<h1>Alpha Bench Report</h1>",
-        "<div class=\"meta\">Generated ",
+        '<div class="meta">Generated ',
         _esc(ctx["generated_at"]),
         " &middot; Universe ",
         _esc(ctx["universe"]),
@@ -870,7 +981,7 @@ def _render_html_manual(ctx: dict[str, Any]) -> str:
             provenance = f" ({_esc(source)}"
             provenance += f", as of {_esc(as_of)})" if as_of else ")"
         parts.append(
-            "<div class=\"bias-warning\"><strong>Survivorship bias:</strong> universe "
+            '<div class="bias-warning"><strong>Survivorship bias:</strong> universe '
             f"membership is the current constituent list{provenance}, so delisted and "
             "removed names are absent. IC statistics in this report are biased upward."
             "</div>"
@@ -900,7 +1011,7 @@ def _render_html_manual(ctx: dict[str, Any]) -> str:
     if ctx.get("strict"):
         parts.append(
             "<h2>Strict gate</h2>"
-            "<div class=\"meta\">Alpha t-stats against the same-universe random "
+            '<div class="meta">Alpha t-stats against the same-universe random '
             "control. The strict gate decides on these, not on IC.</div><table>"
             "<tr><th>Alpha ID</th><th>alpha_t full</th><th>alpha_t train</th>"
             "<th>alpha_t test</th><th>random IC mean</th><th>Category</th></tr>"
@@ -924,13 +1035,13 @@ def _render_html_manual(ctx: dict[str, Any]) -> str:
     for row in ctx["top"]:
         parts.append(
             f"<tr><td>{_esc(row['id'])}</td>"
-            f"<td class=\"formula\">{_esc(row['formula_latex'])}</td></tr>"
+            f'<td class="formula">{_esc(row["formula_latex"])}</td></tr>'
         )
     parts.append("</table>")
     failures = ctx.get("failures") or []
     if failures:
         parts.append(
-            f"<h2 class=\"skipped\">Skipped / Failed ({len(failures)} shown)</h2><table>"
+            f'<h2 class="skipped">Skipped / Failed ({len(failures)} shown)</h2><table>'
         )
         parts.append("<tr><th>Alpha ID</th><th>Reason</th></tr>")
         for f in failures:
@@ -1023,7 +1134,13 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
     for aid in alpha_ids:
         try:
             results.append(_bench_one_alpha(registry, aid, panel, return_df))
-        except (SkipAlpha, RegistryError, RuntimeError, KeyError, ValueError) as exc:
+        except (
+            SkipAlpha,
+            RegistryError,
+            RuntimeError,
+            KeyError,
+            ValueError,
+        ) as exc:
             failures.append({"alpha_id": aid, "reason": str(exc)})
         except Exception as exc:  # noqa: BLE001 — isolate per-alpha failure
             logger.exception("alpha_bench unexpected failure on %s", aid)
@@ -1039,7 +1156,9 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
     context = {
         "csp": _CSP,
         "css": _REPORT_CSS,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ),
         "universe": universe,
         "period": period,
         "n_alphas_tested": len(results),
@@ -1050,7 +1169,9 @@ def run_alpha_bench(**kwargs: Any) -> dict[str, Any]:
 
     try:
         report_html = _render_html(context)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        )
         report_fd = os.open(report_path, flags, 0o666)
         with os.fdopen(report_fd, "w", encoding="utf-8") as report_file:
             report_file.write(report_html)
