@@ -7,6 +7,7 @@ from sqlalchemy.pool import QueuePool
 from sqlalchemy.sql import text
 
 from backtest.loaders.registry import register
+from src.tools.alpha_bench_tool import _CSI300_FALLBACK_CODES
 
 engine = None
 QUANT_PG_DATA_SQL = None
@@ -97,9 +98,9 @@ class DataLoader:
             #     """,
             # )
             if codes is not None:
-                sql = text(
-                    QUANT_PG_DATA_SQL + " and symbol in :symbols"
-                ).bindparams(symbols=tuple(codes))
+                sql = text(QUANT_PG_DATA_SQL + " and symbol in :symbols").bindparams(
+                    symbols=tuple(codes)
+                )
             else:
                 sql = text(QUANT_PG_DATA_SQL)
 
@@ -126,3 +127,18 @@ class DataLoader:
                 ],
             )
             return ret_df
+
+
+def _pg_load_universe() -> dict[str, pd.DataFrame]:  # pyright: ignore[reportUnusedFunction]
+    global engine
+
+    if engine is None:
+        __init__()
+    if engine is None:
+        return {}
+    codes = list(_CSI300_FALLBACK_CODES)
+
+    with engine.connect() as conn:
+        sql = text(QUANT_PG_UNIVERSE_SQL)
+        result = conn.execute(sql).fetchall()
+        return [row[0] for row in result]
