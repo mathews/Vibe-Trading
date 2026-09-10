@@ -33,6 +33,8 @@ _registered = False
 VALID_SOURCES: set[str] = {
     "tushare",
     "okx",
+    "nobitex",
+    "wallex",
     "binance",
     "yfinance",
     "akshare",
@@ -89,6 +91,8 @@ def _ensure_registered() -> None:
     _loader_modules = [
         "backtest.loaders.tushare",
         "backtest.loaders.okx",
+        "backtest.loaders.nobitex",
+        "backtest.loaders.wallex",
         "backtest.loaders.binance_loader",
         "backtest.loaders.yfinance_loader",
         "backtest.loaders.akshare_loader",
@@ -134,8 +138,15 @@ def _ensure_registered() -> None:
 # ``fmp`` joins because an explicit ``source="fmp"`` request must not silently
 # return data from a different source when the Stable endpoint 403s — the
 # caller asked for FMP provenance, not a Yahoo fallback (issue #1270).
+
+# ``nobitex``/``wallex`` join for a stronger version of the same reason: they
+# are the only sources quoting in Iranian Toman, and they declare
+# ``markets = {"crypto"}`` purely to be reachable. Degrading an unavailable
+# ``BTCIRT`` request into the crypto chain would hand a USDT-quoted series back
+# as if it were Toman — a caliber error of about six orders of magnitude, not a
+# missing-data error. An unreachable Iranian endpoint must be visible.
 _NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset(
-    {"pgsql", "local", "qveris", "tickerall", "fmp"}
+    {"pgsql", "local", "qveris", "tickerall", "fmp", "nobitex", "wallex"}
 )  # QVERIS-INTEGRATION
 
 
@@ -197,8 +208,14 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     # so those two are reachable only through the user's local files.
     "vietnam_equity": ["yahoo", "yfinance", "pgsql", "local"],
     # OKX first (native), then dedicated Binance, then generic CCXT / Yahoo.
-    "crypto": ["okx", "binance", "ccxt", "yfinance", "pgsql", "local"],
-    "futures": ["tushare", "akshare", "pgsql", "local"],
+    "crypto": ["okx", "binance", "ccxt", "yfinance", "local"],
+    # tushare led this chain while implementing no futures endpoint at all
+    # (#1395): ``resolve_loader`` walks FALLBACK_CHAINS and never consults a
+    # loader's ``markets`` set, so trimming that set alone would have left
+    # tushare first in line, returning empty frames before akshare was ever
+    # asked. akshare serves Chinese contracts off the token-free Sina daily
+    # endpoints; a global contract has no network source and reaches ``local``.
+    "futures": ["akshare", "local"],
     "fund": ["tushare", "akshare", "pgsql", "local"],
     "macro": ["akshare", "tushare", "pgsql", "local"],
     # mt5 leads when a local MetaTrader 5 terminal is attached (Windows-only,
@@ -488,6 +505,12 @@ def get_loader_cls_with_fallback(source: str) -> Type[Any]:
             "list at least one source.",
             "tickerall": "Set TICKERALL_API_KEY and TICKERALL_ACCOUNT_ID.",
             "fmp": "Set FMP_API_KEY.",
+            "nobitex": "Nobitex's public endpoint was unreachable. It quotes in "
+            "Toman (IRT) and has no substitute — check network access "
+            "to apiv2.nobitex.ir.",
+            "wallex": "Wallex's public endpoint was unreachable. It quotes in "
+            "Toman (TMN) and has no substitute — check network access "
+            "to api.wallex.ir.",
         }.get(source, "")
         raise NoAvailableSourceError(
             f"Data source '{source}' is unavailable and does not fall back to a network source. {hint}".rstrip()

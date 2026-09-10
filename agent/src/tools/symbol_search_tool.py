@@ -63,18 +63,69 @@ _CANADIAN_SYMBOL_RE = re.compile(r"^[A-Z0-9&.\-]+\.(?:TO|V)\b", re.IGNORECASE)
 
 # Explicit exchange-pair spellings are not equity/name searches. Restrict the
 # quote leg to assets used by the built-in crypto connectors so an equity such
-# as ``BRK-B`` is never misclassified as a pair.
-_CRYPTO_QUOTE_ASSETS = (
-    "FDUSD",
-    "USDT",
-    "USDC",
-    "BUSD",
-    "TUSD",
-    "BTC",
-    "ETH",
-    "BNB",
-    "USD",
+# as ``BRK-B`` is never misclassified as a pair. The full set is split into
+# two tiers:
+#
+#   * Stablecoin quotes (FDUSD / USDT / USDC / BUSD / TUSD) are unambiguous -
+#     a ``BTC-USDT`` or ``XAUT-USDC`` cannot be confused with anything outside
+#     crypto. These are accepted on any alphanumeric base.
+#   * ``USD`` is ambiguous: a ``BTC-USD`` is a real Coinbase crypto pair, but
+#     ``XAU-USD`` is spot gold, ``EUR-USD`` is forex, and ``GBP-USD`` is
+#     currency. Restrict ``USD`` to a whitelist of well-known crypto bases
+#     (anything that's actually tradable on Binance/OKX spot, plus the
+#     stablecoin-gold tokens XAUT/PAXG that ARE crypto). Without this guard a
+#     bare ``XAUUSD`` query would lock onto a tokenized-gold row from
+#     Binance instead of the spot gold the user actually asked for.
+_STABLECOIN_QUOTES = ("FDUSD", "USDT", "USDC", "BUSD", "TUSD")
+_CRYPTO_QUOTE_ASSETS = _STABLECOIN_QUOTES + ("BTC", "ETH", "BNB", "USD")
+# Bases that may pair with ``USD`` and still count as a crypto pair. Every
+# entry here is listed on Binance spot or OKX spot; ``XAU``, ``EUR``, etc.
+# are deliberately excluded.
+_CRYPTO_USD_BASES = frozenset(
+    {
+        "BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "DOGE", "TRX", "DOT",
+        "MATIC", "AVAX", "LINK", "LTC", "BCH", "ETC", "XLM", "ATOM",
+        "FIL", "APT", "NEAR", "ALGO", "SAND", "MANA", "AXS", "XAUT",
+        "PAXG",
+    }
 )
+#: Spot precious metals. Their pairs are shaped exactly like FX (three-letter
+#: base, fiat quote) but the base is not a fiat code, so ``canonical_fx_pair``
+#: rejects them and the crypto resolver must too (``XAU-USD`` is spot gold,
+#: ``XAUT-USDT`` is the token).
+_METAL_CODES = frozenset({"XAU", "XAG", "XPT", "XPD"})
+
+
+def _metal_or_fx_legs(value: str) -> tuple[str, str] | None:
+    """Return the ``(base, quote)`` legs of a spot metal / FX pair query.
+
+    Recognizes every spelling the tool has to reconcile — ``XAUUSD``,
+    ``XAU/USD``, ``XAU-USD``, ``XAUUSD=X`` — so a candidate written in one
+    spelling can be compared with a query written in another.
+
+    Args:
+        value: A query string or a candidate symbol.
+
+    Returns:
+        The uppercased legs when the base is a metal or fiat code and the
+        quote is a fiat code, else ``None``.
+    """
+    clean = str(value or "").strip().upper()
+    if clean.endswith("=X"):
+        clean = clean[:-2]
+    if "-" in clean or "/" in clean:
+        base, _, quote = (
+            clean.partition("-") if "-" in clean else clean.partition("/")
+        )
+    elif len(clean) == 6 and clean.isalpha():
+        base, quote = clean[:3], clean[3:]
+    else:
+        return None
+    if base in (_METAL_CODES | FIAT_CODES) and quote in FIAT_CODES:
+        return base, quote
+    return None
+
+
 _CRYPTO_PAIR_RE = re.compile(
     rf"^([A-Z0-9]{{2,15}})[-/]({'|'.join(_CRYPTO_QUOTE_ASSETS)})$",
     re.IGNORECASE,
@@ -238,6 +289,32 @@ class SymbolSearchTool(BaseTool):
                 if _canonical_crypto_pair(str(candidate.get("symbol") or ""))
                 == crypto_pair
             ]
+        elif _metal_or_fx_legs(query) is not None:
+            # A spot metal / FX pair query (``XAUUSD``, ``XAU/USD``,
+            # ``XAUUSD=X``) is an exact instrument assertion, exactly like the
+            # crypto-pair branch above. Yahoo answers such a query by
+            # free-text similarity, and its top hit for spot gold is a Swedish
+            # Bitcoin ETP (``VALOUR-BTC-0-SEK.ST``) or an Aave token
+            # (``AETHUSDT-USD``) — a wrong instrument that then locks the run's
+            # identity. Keep only candidates naming the same two legs; an
+            # empty candidate list leaves the identity unresolved, which is
+            # the safe failure.
+            query_legs = _metal_or_fx_legs(query)
+            candidates = [
+                candidate
+                for candidate in candidates
+                if _metal_or_fx_legs(str(candidate.get("symbol") or "")) == query_legs
+            ]
+        elif query.strip().upper().endswith("=F"):
+            # Yahoo's continuous-front-month futures notation is likewise an
+            # exact assertion: ``GC=F`` is gold futures, and a near-string hit
+            # is a different contract.
+            candidates = [
+                candidate
+                for candidate in candidates
+                if str(candidate.get("symbol") or "").strip().upper()
+                == query.strip().upper()
+            ]
 
         # Canada fail-fast: a Canadian ticker must resolve to the Canadian venue
         # only. Yahoo also returns the US OTC alias of the same company (e.g.
@@ -299,20 +376,46 @@ def _is_canadian_symbol(text: str) -> bool:
 
 
 def _canonical_crypto_pair(value: str) -> str | None:
-    """Return an explicit crypto pair in canonical ``BASE-QUOTE`` form."""
+    """Return an explicit crypto pair in canonical ``BASE-QUOTE`` form.
+
+    A pair is only accepted as a crypto pair when its base is in the
+    appropriate whitelist. Stablecoin quotes (``USDT``/``USDC``/``BUSD``/
+    ``TUSD``/``FDUSD``) accept any alphanumeric base — a 6-letter base
+    cannot be confused with a stablecoin because no real-world asset
+    except crypto ones trades quoted in stablecoins. The ``USD`` quote
+    is gated on :data:`_CRYPTO_USD_BASES` so a bare ``XAUUSD`` /
+    ``EURUSD`` / ``GBPUSD`` query does NOT auto-lock onto tokenized gold
+    or a forex pair that the public venue catalogs do not list.
+
+    Returns ``"BASE-QUOTE"`` for an accepted pair, ``None`` otherwise.
+    """
     clean = str(value or "").strip().upper()
     matched = _CRYPTO_PAIR_RE.fullmatch(clean)
     if matched:
         base, quote = matched.group(1), matched.group(2)
+        # Two independent rejections, both required. The fiat/fiat rule (from
+        # main) covers pairs whose quote leg is not USD; the USD whitelist
+        # (this PR) covers a USD quote whose base is not a known crypto —
+        # XAU is not a fiat code, so fiat/fiat alone lets XAU-USD through and
+        # the venue catalog locks tokenized gold as "spot gold".
         if base in FIAT_CODES and quote in FIAT_CODES:
             return None  # fiat/fiat is an FX pair, not crypto
+        if quote == "USD" and base not in _CRYPTO_USD_BASES:
+            return None
         return f"{base}-{quote}"
     if clean.isalnum():
         for quote in _CRYPTO_QUOTE_ASSETS:
             if clean.endswith(quote) and len(clean) > len(quote) + 1:
                 base = clean[: -len(quote)]
+                # Same two rejections. They differ deliberately in kind:
+                # fiat/fiat has no crypto reading at all, so it gives up;
+                # a non-whitelisted USD base only rules out THIS quote asset,
+                # so it must `continue` and let a longer quote (USDT/USDC)
+                # still match — returning here would strand e.g. XAUT-USDT.
                 if base in FIAT_CODES and quote in FIAT_CODES:
                     return None  # fiat/fiat is an FX pair, not crypto
+                if quote == "USD" and base not in _CRYPTO_USD_BASES:
+                    continue
                 return f"{base}-{quote}"
     return None
 
