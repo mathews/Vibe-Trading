@@ -1,6 +1,6 @@
 [project]
 name = "vibe-trading-ai"
-version = "0.1.15"
+version = "0.1.16"
 description = "Natural-language finance research AI agent with backtesting"
 requires-python = ">=3.11"
 license = "MIT"
@@ -35,6 +35,7 @@ dependencies = [
     "python-docx>=1.1.0",
     "python-pptx>=0.6.23",
     "pypdfium2>=4.0.0",
+    "pypdf>=6.0.0",
     "Pillow>=12.2.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
@@ -71,7 +72,16 @@ dependencies = [
     "ddgs>=6.0.0",
     "jinja2>=3.1.0",
     "matplotlib>=3.7.0",
+    "mistune>=3.0.0",
+    "nh3>=0.2.18",
     "weasyprint>=60.0",
+    # weasyprint needs system pango/cairo libraries pip cannot install; where
+    # they are missing the shadow report degraded to HTML-only. reportlab
+    # ships binary wheels everywhere and backs the pure-Python PDF fallback
+    # (shadow_account/pdf_fallback.py) so the PDF renders on any host.
+    "reportlab>=4.0",
+    "arabic-reshaper>=3.0.1",
+    "python-bidi>=0.6.11",
     "prompt_toolkit>=3.0.0",
 ]
 
@@ -100,14 +110,18 @@ include = ["src*", "backtest*", "cli*", "evals*"]
     "skills/**/*.json",
     "skills/**/*.py",
     "providers/*.json",
+    "pixel_agents/*.json",
     "scheduled_research/playbooks/*.md",
     "swarm/presets/*.yaml",
     "shadow_account/templates/*.j2",
     "shadow_account/templates/*.html",
     "shadow_account/templates/*.css",
+    "shadow_account/assets/*.ttf",
+    "shadow_account/assets/*.txt",
+    "shadow_account/assets/*.md",
 ]
 "evals.harness" = ["README.md", "cases/**/*.json"]
-"backtest" = ["*.py"]
+"backtest" = ["*.py", "loaders/*.json"]
 "src.factors" = ["zoo/**/*.yaml", "zoo/**/*.md", "zoo/**/NOTICE"]
 
 [project.optional-dependencies]
@@ -128,6 +142,12 @@ zerodha = [
     # loader backend. Lazy-imported with a named error; zerodha_available()
     # stays False (loader falls through to Shoonya/Dhan) until installed.
     "kiteconnect>=4.0.0",
+]
+upbit = [
+    # Upbit (Korea, KRW crypto) broker connector JWT signing. Lazy-imported
+    # with a named error naming this extra; upbit_jwt_available() stays False
+    # until installed.
+    "PyJWT>=2.8.0",
 ]
 deepseek = [
     "langchain-deepseek>=1.0.0,<2",

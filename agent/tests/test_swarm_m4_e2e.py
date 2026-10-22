@@ -134,7 +134,7 @@ class _StubChatLLM:
     def __call__(self, *args, **kwargs):  # pragma: no cover — supports ChatLLM(model_name=...)
         return self
 
-    def stream_chat(self, messages, tools=None, on_text_chunk=None, timeout=None):
+    def stream_chat(self, messages, tools=None, on_text_chunk=None, timeout=None, on_waiting_chunk=None):
         self.tool_defs_seen.append(tools)
         if not self._responses:
             return LLMResponse(content="(stub exhausted)", finish_reason="stop")
@@ -274,7 +274,7 @@ def test_run_worker_uses_remote_mcp_tool_and_report_cites_canned_data(
     with (
         patch(
             "src.swarm.worker.build_swarm_registry",
-            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                 tool_names,
                 remote_tools,
                 include_shell_tools=include_shell_tools,
@@ -296,7 +296,7 @@ def test_run_worker_uses_remote_mcp_tool_and_report_cites_canned_data(
         )
 
     assert result.status == "completed"
-    report_path = tmp_path / "artifacts" / "kb_analyst" / "report.md"
+    report_path = tmp_path / "artifacts" / "kb_analyst" / "t1" / "report.md"
     assert report_path.is_file()
     contents = report_path.read_text(encoding="utf-8")
     assert canned_payload["answer"] in contents
@@ -358,7 +358,7 @@ def test_two_agents_with_distinct_servers_only_see_their_own_remote_tools(
         with (
             patch(
                 "src.swarm.worker.build_swarm_registry",
-                wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+                wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                     tool_names, remote_tools, include_shell_tools=include_shell_tools,
                 ),
             ),
@@ -453,7 +453,7 @@ def test_tool_call_events_carry_mcp_metadata_and_redact_sensitive_arguments(
     with (
         patch(
             "src.swarm.worker.build_swarm_registry",
-            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                 tool_names, remote_tools, include_shell_tools=include_shell_tools,
             ),
         ),
@@ -543,7 +543,7 @@ def test_remote_tool_transport_failure_does_not_crash_worker(tmp_path: Path) -> 
     with (
         patch(
             "src.swarm.worker.build_swarm_registry",
-            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                 tool_names, remote_tools, include_shell_tools=include_shell_tools,
             ),
         ),

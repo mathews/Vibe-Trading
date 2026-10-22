@@ -6,7 +6,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,18 @@ from src.trading.types import TradingProfile
 CONFIG_FILENAME = "connections.json"
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 REQUIRED_READ_CAPABILITIES = frozenset({"account.read", "positions.read"})
+_ACCOUNT_REF_MAX_LENGTH = 128
+
+
+def is_readonly_connection_profile(profile: TradingProfile) -> bool:
+    """Allow credential management for a verified read surface, even without valuation.
+
+    Portfolio eligibility is stricter and remains controlled separately by
+    is_portfolio_connection_profile. Discovery alone is not a usable read.
+    """
+    from src.trading.types import READ_CAPABILITIES
+
+    return bool(profile.readonly) and bool(set(profile.capabilities).intersection(READ_CAPABILITIES))
 
 
 def is_portfolio_connection_profile(profile: TradingProfile) -> bool:
@@ -38,6 +50,42 @@ def is_portfolio_connection_profile(profile: TradingProfile) -> bool:
         True when the profile can serve account and position reads.
     """
     return bool(profile.readonly) and REQUIRED_READ_CAPABILITIES.issubset(profile.capabilities)
+
+
+def requires_account_selection(profile: TradingProfile) -> bool:
+    """Report whether a profile's account-scoped reads must name one account.
+
+    A remote MCP server such as Robinhood's serves every account behind one
+    OAuth grant and takes the account on each read. A connection through such a
+    profile reads nothing until an account is selected; it never falls back to
+    a default or first account.
+
+    Args:
+        profile: Built-in or operator-installed trading profile.
+
+    Returns:
+        True when the profile declares ``account_selection: required``.
+    """
+    return profile.config.get("account_selection") == "required"
+
+
+def validate_account_ref(value: object) -> str:
+    """Return a stripped opaque account reference, or raise.
+
+    Args:
+        value: Untrusted account reference; ``None`` means no account.
+
+    Returns:
+        The stripped reference, empty when none was given.
+
+    Raises:
+        ValueError: If the reference is longer than 128 characters or carries
+            a control character.
+    """
+    account_ref = str(value or "").strip()
+    if len(account_ref) > _ACCOUNT_REF_MAX_LENGTH or any(ord(character) < 32 for character in account_ref):
+        raise ValueError("account reference must be at most 128 printable characters")
+    return account_ref
 
 
 def _now() -> str:
@@ -79,6 +127,8 @@ class TradingConnection:
         label: Human-readable name shown in the UI.
         credential_ref: Opaque locator for the credentials; never a secret.
         created_at: ISO-8601 UTC creation timestamp.
+        account_ref: Broker account the reads are scoped to, for a profile
+            that requires one; empty until the user selects it.
     """
 
     id: str
@@ -86,6 +136,7 @@ class TradingConnection:
     label: str
     credential_ref: str
     created_at: str
+    account_ref: str = ""
 
     def to_dict(self) -> dict[str, str]:
         """Return the connection as a JSON-serializable mapping.
@@ -226,6 +277,26 @@ class ConnectionStore:
             raise ValueError(f"local connection {existing.id} already uses profile {existing.profile_id}")
         return existing
 
+    def select_account(self, connection_id: str, account_ref: str) -> TradingConnection:
+        """Scope a connection's reads to one broker account.
+
+        The caller is responsible for checking the account against the broker's
+        own account list first; this only validates and stores the reference.
+
+        Args:
+            connection_id: Connection to update.
+            account_ref: Account reference, or empty to clear the selection.
+
+        Returns:
+            The stored connection.
+
+        Raises:
+            ValueError: If the connection is unknown, its profile takes no
+                account, or the reference fails validation.
+        """
+        connection = self.get(connection_id)
+        return self.save(replace(connection, account_ref=validate_account_ref(account_ref)))
+
     def delete(self, connection_id: str) -> None:
         """Delete a connection and any secrets stored for it.
 
@@ -266,8 +337,10 @@ class ConnectionStore:
                     "environment": profile.environment,
                     "transport": profile.transport,
                     "readonly": profile.readonly,
+                    "portfolio_eligible": is_portfolio_connection_profile(profile),
                     "capabilities": list(profile.capabilities),
                     "supports_reconnect": profile.transport == "remote_mcp",
+                    "account_selection_required": requires_account_selection(profile),
                     "credential_fields": credential_field_catalog(profile.id),
                     "credential_status": field_status,
                     "credentials_configured": bool(required_fields)
@@ -299,8 +372,8 @@ class ConnectionStore:
             raise ValueError(f"invalid local connection id: {connection_id or '?'}")
         profile_id = str(raw.get("profile_id") or "").strip().lower()
         profile = profile_by_id(profile_id)
-        if not is_portfolio_connection_profile(profile):
-            raise ValueError(f"connection profile is not eligible for read-only portfolios: {profile_id}")
+        if not is_readonly_connection_profile(profile):
+            raise ValueError(f"connection profile is not eligible for read-only connections: {profile_id}")
         label = str(raw.get("label") or profile.label).strip()
         if not label or len(label) > 80 or any(ord(character) < 32 for character in label):
             raise ValueError("connection label must contain 1 to 80 printable characters")
@@ -311,12 +384,16 @@ class ConnectionStore:
             credential_ref = expected_ref
         if credential_ref != expected_ref:
             raise ValueError("connection credential_ref does not match its local transport")
+        account_ref = validate_account_ref(raw.get("account_ref"))
+        if account_ref and not requires_account_selection(profile):
+            raise ValueError(f"connection profile does not take an account: {profile.id}")
         return TradingConnection(
             id=connection_id,
             profile_id=profile.id,
             label=label,
             credential_ref=credential_ref,
             created_at=str(raw.get("created_at") or _now()),
+            account_ref=account_ref,
         )
 
     def _write(self, connections: list[TradingConnection]) -> None:
@@ -388,7 +465,7 @@ def credential_fields(profile_id: str) -> tuple[str, ...]:
 
 
 def readonly_profile_catalog() -> list[dict[str, Any]]:
-    """Return the profiles that can back a read-only portfolio connection.
+    """Return profiles with a usable read surface and their portfolio eligibility.
 
     Returns:
         One row per eligible profile, sorted by connector, environment and
@@ -399,7 +476,7 @@ def readonly_profile_catalog() -> list[dict[str, Any]]:
     plugin_ids = {plugin.profile.id for plugin in plugins}
     rows = []
     for profile in list_profiles():
-        if not is_portfolio_connection_profile(profile):
+        if not is_readonly_connection_profile(profile):
             continue
         rows.append(
             {
@@ -410,10 +487,12 @@ def readonly_profile_catalog() -> list[dict[str, Any]]:
                 "transport": profile.transport,
                 "capabilities": list(profile.capabilities),
                 "readonly": profile.readonly,
+                "portfolio_eligible": is_portfolio_connection_profile(profile),
                 "notes": profile.notes,
                 "local_plugin": profile.id in plugin_ids,
                 "credential_fields": credential_field_catalog(profile.id),
                 "supports_reconnect": profile.transport == "remote_mcp",
+                "account_selection_required": requires_account_selection(profile),
                 "onboarding": onboarding_dict(profile),
             }
         )

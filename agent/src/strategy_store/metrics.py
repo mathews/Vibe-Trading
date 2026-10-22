@@ -7,9 +7,14 @@ bench-history list.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
 _DECAY_INPUT_KEYS = ("ic_ratio", "rolling_ir", "ic_positive_ratio", "rolling_sharpe")
+
+#: Bench types that measure an artifact over time. ``manual`` rows record
+#: ad-hoc reruns and are kept out of decay so they cannot shift the baseline.
+DECAY_BENCH_TYPES = ("initial", "periodic")
 
 
 def has_decay_inputs(metrics: dict[str, float | None]) -> bool:
@@ -35,7 +40,8 @@ def compute_decay_metrics(
     Returns:
         Dict with keys: ``baseline_ic_mean``, ``rolling_ic_mean``, ``ic_ratio``,
         ``rolling_ir``, ``ic_positive_ratio``, ``rolling_sharpe``, ``baseline_sharpe``.
-        Values are ``None`` when insufficient data (< 3 non-None entries).
+        Values are ``None`` when insufficient data (< 3 finite entries).
+        NaN and infinities are treated as missing observations, like ``None``.
     """
     result: dict[str, float | None] = {
         "baseline_ic_mean": None,
@@ -49,8 +55,14 @@ def compute_decay_metrics(
 
     chronological = list(reversed(bench_history))
 
-    ic_values = [r.ic_mean for r in chronological if r.ic_mean is not None]
-    sharpe_values = [r.sharpe for r in chronological if r.sharpe is not None]
+    ic_values = [
+        r.ic_mean
+        for r in chronological
+        if r.ic_mean is not None and isfinite(r.ic_mean)
+    ]
+    sharpe_values = [
+        r.sharpe for r in chronological if r.sharpe is not None and isfinite(r.sharpe)
+    ]
 
     has_ic = len(ic_values) >= 3
     has_sharpe = len(sharpe_values) >= 3
@@ -65,7 +77,15 @@ def compute_decay_metrics(
         result["baseline_ic_mean"] = round(baseline_mean, 6)
         result["rolling_ic_mean"] = round(rolling_mean, 6)
 
-        if baseline_mean != 0:
+        # baseline_ics and rolling_ics are the oldest/newest 5 entries, so
+        # with fewer than 10 they share observations. At 3-5 entries they
+        # are identical; at 6-9 the overlap dilutes the measured change.
+        # Require disjoint windows before comparing baseline and recent IC.
+        # baseline_mean > 0, not != 0: with a negative baseline, dividing
+        # two negatives gives a positive ratio, so a rolling IC that got
+        # much MORE negative (real decay) produces a large ic_ratio that
+        # the healthy/warning/decayed thresholds read as improvement.
+        if baseline_mean > 0 and len(ic_values) >= len(baseline_ics) + len(rolling_ics):
             result["ic_ratio"] = round(rolling_mean / baseline_mean, 4)
 
         if len(rolling_ics) > 1:

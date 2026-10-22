@@ -39,7 +39,7 @@ ALPHA_ID = "gtja191_128"
 __alpha_meta__ = {
     'id': 'gtja191_128',
     'theme': ['momentum'],
-    'formula_latex': 'see body',
+    'formula_latex': '100-100/(1+SUM(((H+L+C)/3*V) if up else 0,14)/SUM((... if down else 0),14))',
     'columns_required': ['open', 'high', 'low', 'close', 'volume'],
     'extras_required': [],
     'universe': ['equity_cn'],
@@ -65,8 +65,11 @@ def compute(panel):
     v = panel["volume"]
     tp = (h + l + c) / 3.0
     dtp = tp - tp.shift(1)
-    up = (tp * v).where(dtp > 0, 0.0).rolling(14).sum()
-    down = (tp * v).where(dtp < 0, 0.0).rolling(14).sum()
+    flow = tp * v
+    # A missing price change or money flow is neither inflow nor outflow (#1463).
+    valid = dtp.notna() & flow.notna()
+    up = flow.where(dtp > 0, 0.0).where(valid).rolling(14).sum()
+    down = flow.where(dtp < 0, 0.0).where(valid).rolling(14).sum()
     ratio = safe_div(up, down)
     out = 100.0 - 100.0 / (1.0 + ratio)
     return out

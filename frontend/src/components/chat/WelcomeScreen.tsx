@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, TrendingUp, Globe, Sparkles, Users, UserCircle2, NotebookPen, Landmark, Gem } from "lucide-react";
+import { ChevronDown, TrendingUp, Globe, Sparkles, Users, UserCircle2, NotebookPen, Landmark, Gem, Search, WalletCards } from "lucide-react";
 import { BrandMark } from "@/components/common/BrandMark";
 
 interface Example {
@@ -20,6 +20,11 @@ const CATEGORIES: Category[] = [
     labelKey: "welcome.categories.multiMarketBacktest",
     icon: <TrendingUp className="h-4 w-4" />,
     examples: [
+      {
+        titleKey: "welcome.examples.adaptStrategy",
+        descKey: "welcome.examples.adaptStrategyDesc",
+        promptKey: "welcome.examples.adaptStrategyPrompt",
+      },
       {
         titleKey: "welcome.examples.crossMarketPortfolio",
         descKey: "welcome.examples.crossMarketPortfolioDesc",
@@ -196,24 +201,19 @@ const GREETING_KEYS = {
 
 const QUICK_ACTIONS = [
   {
-    titleKey: "welcome.examples.valuationCheck",
-    promptKey: "welcome.examples.valuationCheckPrompt",
-    icon: <Gem className="h-4 w-4" aria-hidden="true" />,
+    titleKey: "welcome.tasks.research",
+    promptKey: "welcome.tasks.researchPrompt",
+    icon: <Search className="h-4 w-4" aria-hidden="true" />,
   },
   {
-    titleKey: "welcome.examples.optionsGreeks",
-    promptKey: "welcome.examples.optionsGreeksPrompt",
-    icon: <Sparkles className="h-4 w-4" aria-hidden="true" />,
-  },
-  {
-    titleKey: "welcome.examples.crossMarketPortfolio",
-    promptKey: "welcome.examples.crossMarketPortfolioPrompt",
+    titleKey: "welcome.tasks.backtest",
+    promptKey: "welcome.tasks.backtestPrompt",
     icon: <TrendingUp className="h-4 w-4" aria-hidden="true" />,
   },
   {
-    titleKey: "welcome.examples.investmentCommittee",
-    promptKey: "welcome.examples.investmentCommitteePrompt",
-    icon: <Users className="h-4 w-4" aria-hidden="true" />,
+    titleKey: "welcome.tasks.portfolio",
+    promptKey: "welcome.tasks.portfolioPrompt",
+    icon: <WalletCards className="h-4 w-4" aria-hidden="true" />,
   },
 ] as const;
 
@@ -240,6 +240,7 @@ export function WelcomeScreen({ onExample }: Props) {
   const [greetingKey] = useState(() => pickGreetingKey());
   const [isExamplesOpen, setIsExamplesOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState(0);
+  const [activeAction, setActiveAction] = useState<string | null>(null);
   const examplesTriggerRef = useRef<HTMLButtonElement>(null);
 
   return (
@@ -254,6 +255,7 @@ export function WelcomeScreen({ onExample }: Props) {
           </div>
           <p className="mt-3 text-sm text-muted-foreground">
             {t("welcome.taskSubtitle" as any)}
+            <span className="mt-2 block text-xs">{t("welcome.tasks.hint")}</span>
           </p>
         </div>
 
@@ -262,21 +264,28 @@ export function WelcomeScreen({ onExample }: Props) {
           role="group"
           aria-label={t("welcome.quickActions" as any)}
         >
-          {QUICK_ACTIONS.map((action, index) => (
-            <button
-              key={action.titleKey}
-              type="button"
-              onClick={() => onExample(t(action.promptKey as any))}
-              className={
-                index === 0
-                  ? "inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/[0.08] px-4 py-2 text-sm text-primary transition-colors hover:border-primary/50 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-                  : "inline-flex items-center gap-2 rounded-full border border-border/60 bg-card px-4 py-2 text-sm transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-              }
-            >
-              {action.icon}
-              <span>{t(action.titleKey as any)}</span>
-            </button>
-          ))}
+          {QUICK_ACTIONS.map((action) => {
+            const isActive = action.titleKey === activeAction;
+            return (
+              <button
+                key={action.titleKey}
+                type="button"
+                aria-pressed={isActive}
+                onClick={() => {
+                  setActiveAction(action.titleKey);
+                  onExample(t(action.promptKey as any));
+                }}
+                className={
+                  isActive
+                    ? "inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/[0.08] px-4 py-2 text-sm text-primary transition-colors hover:border-primary/50 hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                    : "inline-flex items-center gap-2 rounded-full border border-border/60 bg-card px-4 py-2 text-sm transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                }
+              >
+                {action.icon}
+                <span>{t(action.titleKey as any)}</span>
+              </button>
+            );
+          })}
         </div>
 
         <button

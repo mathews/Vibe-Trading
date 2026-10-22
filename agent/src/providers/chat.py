@@ -128,6 +128,9 @@ class LLMResponse:
         response_model: Model identifier reported by the provider response,
             when available. This is authoritative runtime metadata and must
             not be inferred from the model's natural-language self-report.
+        provider_items: Opaque output items the provider needs back verbatim
+            on the next request of the same turn chain (the Codex backend's
+            encrypted reasoning items). Never shown, never summarised.
     """
 
     content: Optional[str] = None
@@ -137,6 +140,7 @@ class LLMResponse:
     usage_metadata: Optional[Dict[str, int]] = None
     content_filter_triggered: bool = False
     response_model: Optional[str] = None
+    provider_items: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_tool_calls(self) -> bool:
@@ -477,6 +481,7 @@ class ChatLLM:
         timeout: Optional[int] = None,
         idle_timeout_s: Optional[float] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        on_waiting_chunk: Optional[Callable[[], None]] = None,
     ) -> LLMResponse:
         """Stream the LLM and optionally forward text deltas (e.g. thinking).
 
@@ -493,6 +498,8 @@ class ChatLLM:
             idle_timeout_s: Optional per-chunk idle timeout; when no stream
                 delta arrives for this long the call fails as a retryable
                 timeout instead of hanging the loop silently.
+            on_waiting_chunk: Provider-confirmed waiting activity, carrying no text.
+                Plain empty chunks and transport keepalives do not invoke it.
             should_cancel: Optional predicate polled per chunk; when it returns
                 True the stream stops early and the partial response is returned.
                 Lets a caller abort a live stream promptly (cooperative cancel).
@@ -522,6 +529,8 @@ class ChatLLM:
                 if should_cancel and should_cancel():
                     cancelled = True
                     break
+                if getattr(chunk, "additional_kwargs", {}).get("provider_waiting") is True and on_waiting_chunk:
+                    on_waiting_chunk()
                 chunk_text = _text_content(chunk.content)
                 if chunk_text and on_text_chunk:
                     if possible_dsml_text:
@@ -682,6 +691,7 @@ class ChatLLM:
             usage_metadata=usage,
             content_filter_triggered=content_filter_triggered,
             response_model=response_model,
+            provider_items=list(additional_kwargs.get("provider_items") or []),
         )
 
 

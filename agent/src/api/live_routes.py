@@ -12,6 +12,7 @@ These are the privileged SURFACE actions of the live-trading channel
 - ``POST /live/authorize``  — discover-only OAuth bootstrap on-ramp (C2)
 - ``POST /live/runner/start`` — start the persistent §7.5 runner
 - ``POST /live/runner/stop``  — stop the persistent §7.5 runner
+- ``GET /live/accounts``      — the broker accounts a mandate can be bound to
 
 Each best-effort relays a ``mandate.committed`` / ``live.halted`` / ``live.action``
 event through the EXISTING session EventBus, so the frontend's already-wired
@@ -21,6 +22,7 @@ event through the EXISTING session EventBus, so the frontend's already-wired
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import sys as _sys
 import time
@@ -29,6 +31,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
+
+from src.live.runtime.decision_budget import DecisionBudget, DecisionSettings
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +156,7 @@ class LiveBrokerStatus(BaseModel):
     mandate: Optional[ActiveMandateState] = None
     runner: RunnerLivenessState
     halted: bool = Field(..., description="Per-broker OR global kill switch is tripped")
+    decision_budget: Optional[Dict[str, Any]] = None
 
 
 class LiveStatusResponse(BaseModel):
@@ -382,11 +387,40 @@ def _live_broker_adapter(broker: str) -> Any:
     raise LiveRunnerUnavailable(f"no MCP server configured for live broker {broker!r}")
 
 
-def _fetch_broker_ceilings(broker: str) -> Optional[Dict[str, Any]]:
+def _mandate_account_ref(broker: str) -> str:
+    """Return the account the broker's committed mandate is bound to, or ``""``."""
+    from src.live.mandate.store import load_mandate
+
+    mandate = load_mandate(broker)
+    return mandate.consent.account_ref.strip() if mandate is not None else ""
+
+
+def _live_account_choices(broker: str) -> List[Dict[str, Any]]:
+    """Read the accounts a live broker's login can reach, as picker rows.
+
+    Raises:
+        LiveRunnerUnavailable: When the broker channel is not configured.
+        ValueError: When the broker lists no accounts, the read failed, or the
+            reply could not be mapped.
+    """
+    from src.trading.service import runner_account_choices, runner_tool_name
+
+    accounts_tool = runner_tool_name(broker, "accounts")
+    if accounts_tool is None:
+        raise ValueError(f"{broker} does not list accounts")
+    adapter = _host()._live_broker_adapter(broker)
+    choices = runner_account_choices(broker, adapter.call_tool(accounts_tool, {}))
+    if choices is None:
+        raise ValueError(f"{broker} does not list accounts")
+    return choices
+
+
+def _fetch_broker_ceilings(broker: str, account_ref: str = "") -> Optional[Dict[str, Any]]:
     """Best-effort fetch of broker-side account ceilings for the commit re-check.
 
-    Returns ``None`` on any failure so the caller falls back to the proposal's
-    own snapshot — a commit is never blocked on a broker read.
+    The read is scoped to the account the mandate is being bound to. Returns
+    ``None`` on any failure so the caller falls back to the proposal's own
+    snapshot — a commit is never blocked on a broker read.
     """
     h = _host()
     try:
@@ -394,16 +428,24 @@ def _fetch_broker_ceilings(broker: str) -> Optional[Dict[str, Any]]:
     except LiveRunnerUnavailable:
         return None
     try:
-        from src.trading.service import runner_tool_name
+        from src.trading.service import runner_account_summary, runner_arguments, runner_tool_name
 
         account_tool = runner_tool_name(broker, "account") or "get_account"
-        result = adapter.call_tool(account_tool, {})
+        result = adapter.call_tool(account_tool, runner_arguments(broker, "account", account_ref))
     except Exception:  # pragma: no cover - status/commit must never raise here
         logger.debug("broker ceiling fetch failed for %s", broker, exc_info=True)
         return None
     if not isinstance(result, dict) or result.get("status") == "error":
         return None
-    payload = result.get("result") if isinstance(result.get("result"), dict) else result
+    try:
+        summary = runner_account_summary(broker, result)
+    except ValueError:
+        logger.debug("broker ceiling reply for %s could not be mapped", broker, exc_info=True)
+        return None
+    if summary is not None:
+        payload: Any = summary
+    else:
+        payload = result.get("result") if isinstance(result.get("result"), dict) else result
     funding: Optional[float] = None
     for key in ("account_funding_usd", "buying_power", "cash", "portfolio_value", "equity"):
         raw = payload.get(key) if isinstance(payload, dict) else None
@@ -505,21 +547,108 @@ def _active_mandate_state(broker: str) -> Optional[ActiveMandateState]:
 
 def _runner_liveness_state(broker: str) -> RunnerLivenessState:
     """Build the runner-liveness snapshot for a broker (SPEC §7.5 contract)."""
-    alive = False
+    task = _host()._runner_tasks.get(broker)
+    alive = task is not None and not task.done()
     tick: Optional[float] = None
     age: Optional[float] = None
     try:
         from src.live.runtime import liveness
 
-        alive = bool(liveness.is_runner_alive(broker))
+        alive = alive or bool(liveness.is_runner_alive(broker))
         raw_tick = liveness.last_tick(broker)
         if raw_tick is not None:
-            tick = float(raw_tick)
+            tick = float(raw_tick) / 1000
             age = max(0.0, time.time() - tick)
     except Exception:  # pragma: no cover - liveness module is built concurrently
         logger.debug("runner liveness lookup failed for %s", broker, exc_info=True)
 
     return RunnerLivenessState(broker=broker, alive=alive, last_tick=tick, last_tick_age_seconds=age)
+
+
+def _decision_budget_state(broker: str) -> Dict[str, Any] | None:
+    """Read model spending controls without probing broker credentials."""
+    from src.trading.service import broker_supports_live_runner
+
+    if not broker_supports_live_runner(broker):
+        return None
+    try:
+        return DecisionBudget(broker).snapshot(datetime.now(timezone.utc))
+    except Exception:
+        logger.warning("could not read live model spending state", exc_info=True)
+        return {"error": "model spending state is unreadable; runner cannot start"}
+
+
+async def _run_live_session_attempt(
+    svc: Any, session_id: str, prompt: str, *, usage_callback: Any = None,
+) -> Dict[str, Any]:
+    """Own a queued session attempt until completion or cooperative cancellation.
+
+    Args:
+        svc: The public session service used by the live runner.
+        session_id: The runner's dedicated session.
+        prompt: The mandate-bound autonomous tick prompt.
+
+    Returns:
+        The submission receipt plus the completed attempt's result.
+
+    Raises:
+        RuntimeError: If submission has no attempt id or execution fails.
+        asyncio.CancelledError: After a stopped tick's attempt has terminated.
+    """
+    loop = asyncio.get_running_loop()
+    completed = loop.create_future()
+    receipt: Dict[str, Any] = {}
+    early_results: Dict[str, Dict[str, Any]] = {}
+
+    def on_terminal(event: Any) -> None:
+        if event.session_id == session_id and usage_callback is not None and event.event_type in {
+            "llm_usage", "llm_usage_unavailable"
+        }:
+            try:
+                usage_callback(event.data if event.event_type == "llm_usage" else {})
+            except Exception:
+                svc.cancel_current(session_id)
+                logger.warning("live model budget stopped the active decision", exc_info=True)
+            return
+        if event.session_id != session_id or event.event_type not in {
+            "attempt.completed", "attempt.failed", "attempt.cancelled", "attempt.interrupted"
+        }:
+            return
+        data = {**event.data, "status": event.event_type.split(".", 1)[1]}
+
+        def settle() -> None:
+            attempt_id = data.get("attempt_id")
+            if not receipt:
+                early_results[attempt_id] = data
+            elif attempt_id == receipt.get("attempt_id") and not completed.done():
+                completed.set_result(data)
+
+        loop.call_soon_threadsafe(settle)
+
+    svc.event_bus.add_listener(on_terminal)
+    try:
+        receipt = await svc.send_message(session_id, prompt)
+        attempt_id = receipt.get("attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            raise RuntimeError("live session submission returned no attempt id")
+        if attempt_id in early_results:
+            completed.set_result(early_results[attempt_id])
+        try:
+            terminal = await asyncio.shield(completed)
+        except asyncio.CancelledError:
+            svc.cancel_current(session_id)
+            # Session execution is a separate task (and may own an AgentLoop
+            # thread). Cancelling only this waiter cannot stop that execution.
+            await asyncio.shield(completed)
+            raise
+        if terminal["status"] != "completed":
+            raise RuntimeError(str(terminal.get("error") or terminal["status"]))
+        return {
+            **receipt, "status": "success", "content": terminal.get("summary", ""),
+            "run_dir": terminal.get("run_dir"),
+        }
+    finally:
+        svc.event_bus.remove_listener(on_terminal)
 
 
 def _build_live_runner(broker: str) -> Any:
@@ -546,7 +675,33 @@ def _build_live_runner(broker: str) -> Any:
     from src.live.runtime.runner import LiveRunner
     from src.live.runtime.scheduler import Scheduler
     from src.live.runtime.triggers import Trigger
-    from src.trading.service import runner_tool_name
+    from src.trading.service import (
+        runner_account_summary,
+        runner_arguments,
+        runner_records,
+        runner_requires_account,
+        runner_tool_name,
+    )
+
+    requires_account = runner_requires_account(broker)
+    if requires_account and not h._mandate_account_ref(broker):
+        raise LiveRunnerUnavailable(
+            f"the {broker} mandate is not bound to an account; commit it again with an account"
+        )
+
+    def _account() -> str:
+        """Resolve the mandate's account on every broker call.
+
+        Re-reading it per call means a mandate re-committed to another account
+        is followed at once, and one whose account disappeared stops the
+        runner's broker calls instead of falling back to a default account.
+        """
+        if not requires_account:
+            return ""
+        account_ref = h._mandate_account_ref(broker)
+        if not account_ref:
+            raise RuntimeError(f"the {broker} mandate is not bound to an account")
+        return account_ref
 
     def _tool(operation: str) -> str:
         remote_tool = runner_tool_name(broker, operation)
@@ -565,7 +720,7 @@ def _build_live_runner(broker: str) -> Any:
     # _live_broker_adapter is monkeypatched on host by tests
     adapter = h._live_broker_adapter(broker)
 
-    def _read(remote_tool: str, record_key: str | None = None):
+    def _read(remote_tool: str, operation: str, record_key: str | None = None):
         """Wrap adapter.call_tool into a READ callable with a normalized payload.
 
         The MCP adapter returns ``{"status": "error", ...}`` envelopes instead
@@ -575,17 +730,27 @@ def _build_live_runner(broker: str) -> Any:
         envelopes: error envelopes raise, success payloads unwrap to ``data``
         (with the pinned ``record_key`` extracted for positions/orders record
         reads, e.g. ``data.positions`` / ``data.orders``). Bare values pass
-        through unchanged.
+        through unchanged. A connector with a mapped reply shape (Robinhood,
+        whose records sit under ``data.data``) is unwrapped by that mapping
+        instead, and a reply that does not match it raises.
         """
         def read() -> Any:
-            payload = adapter.call_tool(remote_tool, {})
+            payload = adapter.call_tool(remote_tool, runner_arguments(broker, operation, _account()))
             if isinstance(payload, list):
                 return payload  # injected/legacy bare response
+            if isinstance(payload, dict) and payload.get("status") == "error":
+                raise RuntimeError(str(payload.get("error") or "broker read failed"))
+            try:
+                mapped = (
+                    runner_records(broker, operation, payload)
+                    if record_key is not None
+                    else runner_account_summary(broker, payload)
+                )
+            except ValueError as exc:
+                raise RuntimeError(f"{remote_tool}: {exc}") from exc
+            if mapped is not None:
+                return mapped
             if not isinstance(payload, dict) or payload.get("status") != "ok":
-                if isinstance(payload, dict) and payload.get("status") == "error":
-                    raise RuntimeError(
-                        str(payload.get("error") or "broker read failed")
-                    )
                 return payload
             data = payload.get("data")
             if record_key is None:
@@ -603,16 +768,57 @@ def _build_live_runner(broker: str) -> Any:
         return read
 
     def _submit(order: Dict[str, Any]) -> Dict[str, Any]:
+        # The mandate's account wins over anything the order dict carries.
+        bound = {**order, **runner_arguments(broker, "orders", _account())}
         if order.get("action") == "cancel":
-            return adapter.call_tool(cancel_order_tool, order)
-        return adapter.call_tool(submit_order_tool, order)
+            return adapter.call_tool(cancel_order_tool, bound)
+        return adapter.call_tool(submit_order_tool, bound)
 
     svc = h._get_session_service()
     session = svc.create_session(title=f"live-runner:{broker}")
     session_id = session.session_id
 
+    budget = DecisionBudget(broker)
+    settings = budget.settings()
+
     async def _agent_caller(sid: str, prompt: str) -> Dict[str, Any]:
-        return await svc.send_message(sid, prompt)
+        from src.live.halt import trip_halt
+
+        decision = None
+        failed = False
+        try:
+            decision = budget.begin(settings, datetime.now(timezone.utc))
+            if decision is None:
+                return {"status": "waiting"}
+            # Broker state and the pinned mandate are reconstructed each tick.
+            # Previous model conversations are neither authority nor input.
+            tick_session = svc.create_session(title=f"live-decision:{broker}")
+
+            def record_usage(data: Dict[str, Any]) -> None:
+                try:
+                    budget.record(decision, data, settings, datetime.now(timezone.utc))
+                except Exception:
+                    trip_halt(by="file", reason="live model spending limit or usage accounting failure", broker=broker)
+                    raise
+
+            return await _run_live_session_attempt(
+                svc, tick_session.session_id, prompt, usage_callback=record_usage,
+            )
+        except asyncio.CancelledError:
+            failed = True
+            raise
+        except Exception:
+            failed = True
+            trip_halt(by="file", reason="live model decision stopped; inspect runtime usage", broker=broker)
+            raise
+        finally:
+            if decision is not None:
+                try:
+                    budget.finish(decision, settings, datetime.now(timezone.utc))
+                except Exception:
+                    trip_halt(by="file", reason="live model budget exhausted or provider usage missing", broker=broker)
+                    if not failed:
+                        raise
 
     def _audit_with_bus(event: Any) -> Dict[str, Any]:
         return write_live_action(
@@ -633,9 +839,9 @@ def _build_live_runner(broker: str) -> Any:
         broker,
         agent_caller=_agent_caller,
         reconcile_fn=reconcile,
-        read_positions=_read(positions_tool, "positions"),
-        read_balance=_read(balance_tool),
-        read_open_orders=_read(open_orders_tool, "orders"),
+        read_positions=_read(positions_tool, "positions", "positions"),
+        read_balance=_read(balance_tool, "account"),
+        read_open_orders=_read(open_orders_tool, "orders", "orders"),
         submit_fn=_submit,
         write_audit_fn=_audit_with_bus,
         scheduler=scheduler,
@@ -646,13 +852,119 @@ def _build_live_runner(broker: str) -> Any:
     return runner
 
 
+def _runner_scheduler_task(runner: Any) -> Optional["asyncio.Task[Any]"]:
+    """Return the live task driving the runner's scheduler, or ``None``.
+
+    Neither ``LiveRunner`` nor ``Scheduler`` exposes a public accessor for the
+    scheduler loop task (``LiveRunner`` only publishes ``runner_id``;
+    ``Scheduler``'s public surface is ``start``/``stop``/``add_job``/
+    ``remove_job``/``jobs``), so both hops are read defensively with
+    ``getattr``. A runner whose ``run_loop`` declined to start — no mandate, or
+    an expired one (``runner.py`` returns before calling ``Scheduler.start``) —
+    leaves ``_task`` unset and has nothing to await.
+    """
+    task = getattr(getattr(runner, "_scheduler", None), "_task", None)
+    if task is None or task.done():
+        return None
+    return task
+
+
+async def _stop_scheduler(runner: Any) -> None:
+    """Tear the runner's scheduler down, tolerating a sync or async ``stop``.
+
+    ``Scheduler.stop`` is a coroutine function, but the ``_Scheduler`` protocol
+    in ``runner.py`` types ``stop`` as returning ``Any``, so injected doubles may
+    be plain callables. Teardown is best-effort: a scheduler that refuses to
+    stop must not turn into an unhandled error inside the driver task.
+    """
+    stop = getattr(getattr(runner, "_scheduler", None), "stop", None)
+    if stop is None:
+        return
+    try:
+        result = stop()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # noqa: BLE001 - teardown is best-effort by contract
+        logger.warning(
+            "live scheduler teardown failed for %s",
+            getattr(runner, "broker", "?"),
+            exc_info=True,
+        )
+
+
 async def _drive_runner(runner: Any) -> None:
-    """Run a runner's ``run_loop`` to completion, sync or async."""
-    result = runner.run_loop()
-    if asyncio.iscoroutine(result):
-        await result
-    else:
-        await asyncio.get_running_loop().run_in_executor(None, lambda: result)
+    """Run a runner's ``run_loop`` and stay alive for as long as its scheduler.
+
+    ``run_loop`` is fire-and-forget: it resolves the jobs, calls
+    ``Scheduler.start()`` (which only spawns the loop task) and returns. The
+    task wrapping this coroutine is the *only* handle
+    ``POST /live/runner/stop`` holds, and its ``add_done_callback`` unregisters
+    it the moment this coroutine returns — so a driver that returned alongside
+    ``run_loop`` would leave the scheduler firing ``run_once()`` on its cadence
+    while ``stop`` answered ``was_running: false``.
+
+    Keeping this coroutine parked on the scheduler task makes the driver's
+    lifetime the scheduler's lifetime, so cancelling it actually stops trading.
+    """
+    scheduler_task = None
+    try:
+        result = runner.run_loop()
+        if inspect.isawaitable(result):
+            await result
+        scheduler_task = _runner_scheduler_task(runner)
+        if scheduler_task is None:
+            return
+        # Shielded: cancelling this task is precisely what ``stop`` does, and the
+        # teardown below is what has to reach the scheduler loop task.
+        await asyncio.shield(scheduler_task)
+    finally:
+        # Starting an async runner may itself be cancelled after it spawned its
+        # scheduler. Cleanup must cover startup as well as the steady-state wait.
+        if scheduler_task is not None or getattr(getattr(runner, "_scheduler", None), "_task", None) is not None:
+            await _stop_scheduler(runner)
+            from src.live.runtime.liveness import heartbeat_path
+
+            try:
+                heartbeat_path(runner.broker).unlink(missing_ok=True)
+            except (AttributeError, OSError, ValueError):
+                logger.warning("could not clear stopped runner heartbeat", exc_info=True)
+
+
+async def _cancel_runner_task(task: Any) -> None:
+    """Cancel a driver once and wait for its scheduler cleanup.
+
+    Concurrent stop requests share the same driver. A second cancellation
+    must not interrupt the first request's asynchronous scheduler teardown.
+    Shielding also lets teardown finish if an HTTP client disconnects.
+
+    Args:
+        task: The registered runner driver task.
+    """
+    if not getattr(task, "cancelling", lambda: 0)():
+        task.cancel()
+    if isinstance(task, asyncio.Future):
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.done():
+                raise
+
+
+async def _stop_live_runners() -> None:
+    """Await all registered live drivers before API shutdown completes."""
+    tasks = _host()._runner_tasks
+    registered = list(tasks.items())
+    results = await asyncio.gather(
+        *(_cancel_runner_task(task) for _, task in registered), return_exceptions=True
+    )
+    for (broker, task), result in zip(registered, results):
+        if tasks.get(broker) is task and task.done():
+            tasks.pop(broker, None)
+        if isinstance(result, BaseException):
+            logger.error(
+                "live runner shutdown failed for %s", broker,
+                exc_info=(type(result), result, result.__traceback__),
+            )
 
 
 # ============================================================================
@@ -688,8 +1000,33 @@ def register_live_routes(
             raise HTTPException(status_code=400, detail="consent_ack must be true to commit a mandate")
 
         from src.live.mandate.commit import CommitError, commit_mandate
+        from src.trading.accounts import choose_account
+        from src.trading.service import runner_requires_account
 
-        broker_ceilings = _host()._fetch_broker_ceilings(payload.broker)
+        account_ref = payload.account_ref.strip()
+        if runner_requires_account(payload.broker):
+            # A live broker whose login reaches several accounts trades only the
+            # one the user picked here, checked against the broker's own list.
+            if not account_ref:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"choose the {payload.broker} account this mandate may trade",
+                )
+            try:
+                choices = _host()._live_account_choices(payload.broker)
+            except LiveRunnerUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except (RuntimeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"the {payload.broker} account list could not be read: {exc}",
+                ) from exc
+            try:
+                choose_account(choices, account_ref, require_agentic=True)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        broker_ceilings = _host()._fetch_broker_ceilings(payload.broker, account_ref)
 
         try:
             result = commit_mandate(
@@ -698,7 +1035,7 @@ def register_live_routes(
                 adjustments=payload.adjustments,
                 consent_ack=payload.consent_ack,
                 broker=payload.broker,
-                account_ref=payload.account_ref,
+                account_ref=account_ref,
                 session_id=payload.session_id,
                 ceilings_ref=broker_ceilings,
                 lifetime_days=payload.lifetime_days,
@@ -715,6 +1052,27 @@ def register_live_routes(
             {"kind": "mandate_committed", "broker": result["broker"], "mandate_id": result["mandate_id"]},
         )
         return result
+
+    @app.get("/live/accounts", dependencies=[Depends(require_auth)])
+    async def list_live_accounts_endpoint(broker: str = Query(..., min_length=1, max_length=64)):
+        """List the accounts a live broker's login can reach, for binding a mandate."""
+        from src.trading.service import runner_requires_account
+
+        key = broker.strip().lower()
+        if not runner_requires_account(key):
+            return {"status": "ok", "broker": key, "account_selection_required": False, "accounts": []}
+        try:
+            choices = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: _host()._live_account_choices(key)
+            )
+        except LiveRunnerUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"the {key} account list could not be read: {exc}",
+            ) from exc
+        return {"status": "ok", "broker": key, "account_selection_required": True, "accounts": choices}
 
     @app.post("/live/halt", dependencies=[Depends(require_auth)])
     async def halt_live_endpoint(payload: LiveHaltRequest):
@@ -920,6 +1278,7 @@ def register_live_routes(
                     mandate=h._active_mandate_state(key),
                     runner=_runner_liveness_state(key),
                     halted=halt_flag_set(broker=key),
+                    decision_budget=_decision_budget_state(key),
                 )
             )
 
@@ -993,6 +1352,31 @@ def register_live_routes(
         report = h._check_connector_status(profile_id, force=force)
         return report
 
+    def runner_settings_store(broker: str) -> DecisionBudget:
+        from src.trading.service import broker_supports_live_runner
+
+        key = broker.strip().lower()
+        if not broker_supports_live_runner(key):
+            raise HTTPException(status_code=400, detail=f"live runner is not supported for {key}")
+        return DecisionBudget(key)
+
+    @app.get("/live/runner/settings", dependencies=[Depends(require_auth)])
+    async def get_runner_settings(broker: str = Query(..., min_length=1, max_length=64)):
+        """Preview cadence, budgets and measured cost before starting a runner."""
+        return runner_settings_store(broker).snapshot(datetime.now(timezone.utc))
+
+    @app.put("/live/runner/settings", dependencies=[Depends(require_auth)])
+    async def put_runner_settings(
+        payload: DecisionSettings, broker: str = Query(..., min_length=1, max_length=64),
+    ):
+        """Save operator settings while stopped; spending history is retained."""
+        store = runner_settings_store(broker)
+        task = _host()._runner_tasks.get(broker.strip().lower())
+        if task is not None and not task.done():
+            raise HTTPException(status_code=409, detail="stop the runner before changing its settings")
+        store.save_settings(payload)
+        return store.snapshot(datetime.now(timezone.utc))
+
     @app.post("/live/runner/start", dependencies=[Depends(require_auth)])
     async def start_runner_endpoint(payload: LiveRunnerControlRequest):
         """Start the persistent live runner for a broker (SPEC §7.5)."""
@@ -1061,11 +1445,13 @@ def register_live_routes(
 
         h = _host()
         tasks = h._runner_tasks
-        task = tasks.pop(broker, None)
+        task = tasks.get(broker)
         if task is None or task.done():
             return {"broker": broker, "stopped": False, "was_running": False}
 
-        task.cancel()
+        await _cancel_runner_task(task)
+        if tasks.get(broker) is task:
+            tasks.pop(broker, None)
         h._emit_live_event(
             payload.session_id,
             "live.action",

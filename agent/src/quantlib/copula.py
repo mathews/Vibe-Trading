@@ -10,7 +10,7 @@ import math
 from typing import Literal
 
 import numpy as np
-from scipy.stats import norm
+from scipy.stats import norm, rankdata
 
 __all__ = [
     "clayton_copula_cdf",
@@ -27,6 +27,9 @@ __all__ = [
 def pseudo_observations(data: np.ndarray) -> np.ndarray:
     """Transform empirical data to uniform [0, 1] pseudo-observations via rank transformation.
 
+    Tied observations receive their average rank, and NaNs remain missing rather
+    than being assigned an arbitrary order.
+
     Args:
         data: 1-D or 2-D array of observations.
 
@@ -34,15 +37,26 @@ def pseudo_observations(data: np.ndarray) -> np.ndarray:
         Array of normalized ranks in (0, 1), shape matching ``data``.
     """
     arr = np.asarray(data, dtype=float)
+    if arr.ndim not in (1, 2):
+        raise ValueError("data must be 1-D or 2-D")
+    if np.isinf(arr).any():
+        raise ValueError("data must not contain infinite values")
+
     if arr.ndim == 1:
-        n = len(arr)
-        ranks = np.argsort(np.argsort(arr)) + 1
-        return ranks / (n + 1.0)
-    elif arr.ndim == 2:
-        n = arr.shape[0]
-        ranks = np.argsort(np.argsort(arr, axis=0), axis=0) + 1
-        return ranks / (n + 1.0)
-    raise ValueError("data must be 1-D or 2-D")
+        result = np.full(arr.shape, np.nan, dtype=float)
+        valid = ~np.isnan(arr)
+        n = int(valid.sum())
+        if n:
+            result[valid] = rankdata(arr[valid], method="average") / (n + 1.0)
+        return result
+
+    result = np.full(arr.shape, np.nan, dtype=float)
+    for column in range(arr.shape[1]):
+        valid = ~np.isnan(arr[:, column])
+        n = int(valid.sum())
+        if n:
+            result[valid, column] = rankdata(arr[valid, column], method="average") / (n + 1.0)
+    return result
 
 
 def clayton_copula_cdf(u: float | np.ndarray, v: float | np.ndarray, theta: float) -> float | np.ndarray:
@@ -186,7 +200,11 @@ def gaussian_copula_cdf(u: float, v: float, rho: float) -> float:
     z1 = float(norm.ppf(u))
     z2 = float(norm.ppf(v))
     cov = [[1.0, rho], [rho, 1.0]]
-    val = multivariate_normal.cdf([z1, z2], mean=[0.0, 0.0], cov=cov)
+    # Near-perfect valid correlations can be numerically rank deficient under
+    # SciPy's tolerance. This covariance remains positive semidefinite.
+    val = multivariate_normal.cdf(
+        [z1, z2], mean=[0.0, 0.0], cov=cov, allow_singular=True
+    )
     return float(val)
 
 
@@ -221,6 +239,10 @@ def fit_copula_from_tau(tau: float, family: Literal["clayton", "gumbel", "gaussi
             raise ValueError("Gaussian copula requires tau in (-1, 1)")
         # Greiner's relation: rho = sin(pi/2 * tau)
         rho = float(math.sin(math.pi * 0.5 * tau))
+        # sin rounds to an exact endpoint for some valid interior tau values.
+        # Preserve the strict open interval required by gaussian_copula_cdf.
+        if abs(rho) == 1.0:
+            rho = math.nextafter(rho, 0.0)
         return {"family": "gaussian", "rho": rho, "tau": tau, "lambda_lower": 0.0, "lambda_upper": 0.0}
     else:
         raise ValueError(f"Unsupported family: {family}")
