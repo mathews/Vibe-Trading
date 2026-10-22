@@ -137,11 +137,13 @@ def _normalize_symbol(code: str, market: str) -> str:
     if market == "hk_equity":
         return f"{upper.zfill(4)}.HK"
     if market == "a_share":
-        # 6xxxxx -> Shanghai; 4xxxxx / 8xxxxx -> Beijing; else (0/3) Shenzhen.
-        if upper[:1] == "6":
-            return f"{upper}.SH"
-        if upper[:1] in ("4", "8"):
+        # Same prefix rule as ``tools.tushare_fallbacks._ts_code``: Beijing
+        # 4xxxxx / 8xxxxx / 920xxx (checked before the Shanghai 9 prefix),
+        # Shanghai 5xxxxx funds / 6xxxxx / 9xxxxx B shares, else Shenzhen.
+        if upper.startswith(("4", "8", "920")):
             return f"{upper}.BJ"
+        if upper.startswith(("5", "6", "9")):
+            return f"{upper}.SH"
         return f"{upper}.SZ"
     return cleaned
 

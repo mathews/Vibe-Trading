@@ -134,6 +134,16 @@ class TestNormalizeSymbol:
         assert _normalize_symbol("300750", "a_share") == "300750.SZ"
         assert _normalize_symbol("830799", "a_share") == "830799.BJ"
 
+    def test_bare_a_share_follows_the_tushare_prefix_rule(self):
+        # Beijing's current 920xxx codes used to fall through to Shenzhen, and
+        # so did Shanghai funds (5xxxxx) and B shares (9xxxxx).
+        assert _normalize_symbol("920002", "a_share") == "920002.BJ"
+        assert _normalize_symbol("430047", "a_share") == "430047.BJ"
+        assert _normalize_symbol("510300", "a_share") == "510300.SH"
+        assert _normalize_symbol("900901", "a_share") == "900901.SH"
+        assert _normalize_symbol("200002", "a_share") == "200002.SZ"
+        assert _normalize_symbol("159915", "a_share") == "159915.SZ"
+
     def test_already_suffixed_passes_through(self):
         assert _normalize_symbol("AAPL.US", "us_equity") == "AAPL.US"
         assert _normalize_symbol("600000.SH", "a_share") == "600000.SH"
